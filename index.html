@@ -1498,7 +1498,7 @@ async function exportZip() {
     const name = ((c.case || 'inspection').replace(/[^\w\- ]+/g, '').trim() || 'inspection') + '_' + (c.vi_date || today()) + '.zip';
     const file = new File([blob], name, { type: 'application/zip' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) { // iPad / phone: share sheet (Save to Files, AirDrop, Mail…)
-      try { await navigator.share({ files: [file], title: name }); toast('Exported'); return; } catch (e) { if (e.name === 'AbortError') return; }
+      try { await navigator.share({ files: [file] }); toast('Exported'); return; } catch (e) { if (e.name === 'AbortError') return; }
     }
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     toast('Exported ' + name);
@@ -1734,7 +1734,7 @@ async function savePdf(opts) {
   try {
     const blob = await PDF.build(i, S.photos, opts, m => { if (btn) btn.textContent = m; });
     const file = new File([blob], name, { type: 'application/pdf' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: name }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; } }
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   } catch (e) { console.error(e); alert('PDF failed: ' + (e.message || e)); }
   finally { if (btn) { btn.disabled = false; btn.textContent = 'Save PDF'; } }
