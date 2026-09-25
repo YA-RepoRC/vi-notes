@@ -2,7 +2,7 @@
  * Field types: text, num, date, area, select, multi, yn, status, lr, tread, table, heading
  * Every field/heading can take photos. Edit freely — the app renders from this.
  */
-const STATUS_OPTS = ['OK', 'Comment', 'Not Evaluated'];
+const STATUS_OPTS = ['Unremarkable', 'Comment', 'Not Evaluated'];
 const INTACT = ['Intact', 'Broken Out', 'N/A'];
 
 function tireBlock(p, label, spare) {
@@ -307,7 +307,7 @@ const SCHEMA = [
       { id: 'fr_hdr', type: 'heading', label: 'Front Radar', na: true },
       { id: 'fr_loc', label: 'Location', type: 'text' },
       { id: 'fr_pn', label: 'Part Number', type: 'text' },
-      { id: 'fr_mount', label: 'Mounting / Bracket', type: 'status', opts: ['OK', 'Displaced', 'Damaged', 'Missing', 'Not Evaluated'] },
+      { id: 'fr_mount', label: 'Mounting / Bracket', type: 'status', opts: ['Unremarkable', 'Displaced', 'Damaged', 'Missing', 'Not Evaluated'] },
       { id: 'fr_cover', label: 'Fascia / Emblem Cover Condition', type: 'status', opts: STATUS_OPTS },
       { id: 'fr_aim', label: 'Aim / Alignment Evidence', type: 'text', full: true },
       { id: 'fc_hdr', type: 'heading', label: 'Forward Camera', na: true },

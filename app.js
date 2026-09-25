@@ -25,9 +25,56 @@ const DB = (() => {
     get: (store, k) => tx(store, 'readonly', s => s.get(k)),
     del: (store, k) => tx(store, 'readwrite', s => s.delete(k)),
     all: store => tx(store, 'readonly', s => s.getAll()),
-    photosOf: id => open().then(d => new Promise(res => { const r = d.transaction('photos').objectStore('photos').index('insp').getAll(id); r.onsuccess = () => res(r.result); })),
+    photosOf: id => open().then(d => new Promise(res => { const r = d.transaction('photos').objectStore('photos').index('insp').getAll(id); r.onsuccess = () => res(r.result); })).then(hydratePhotos),
   };
 })();
+
+/* Photo bytes are stored as ArrayBuffers (Safari cannot reliably read Blobs back out of IndexedDB).
+   In memory each photo carries rep/orig as Blobs; toRecord() strips them before writing. */
+async function blobToBuf(b) { try { return await new Response(b).arrayBuffer(); } catch (e) { return null; } }
+function dataUrlToBuf(u) { const bin = atob(u.split(',')[1]); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a.buffer; }
+function toRecord(p) { const { rep, orig, ...rest } = p; return rest; }
+async function hydratePhotos(list) {
+  const out = [];
+  for (const p of list) {
+    let dirty = false;
+    if (!p.repBuf) { // legacy record with Blob fields — migrate, fall back to thumbnail if the Blob is unreadable
+      let rb = p.rep && p.rep.size ? await blobToBuf(p.rep) : null; if (!rb || !rb.byteLength) rb = dataUrlToBuf(p.thumb);
+      let ob = p.orig && p.orig.size ? await blobToBuf(p.orig) : null; if (!ob || !ob.byteLength) ob = rb;
+      p.repBuf = rb; p.origBuf = ob; p.origType = p.type || 'image/jpeg'; delete p.rep; delete p.orig; dirty = true;
+    }
+    p.rep = new Blob([p.repBuf], { type: 'image/jpeg' }); p.orig = new Blob([p.origBuf], { type: p.origType || 'image/jpeg' });
+    if (dirty) { try { await DB.put('photos', toRecord(p)); } catch (e) { } }
+    out.push(p);
+  }
+  return out;
+}
+
+/* Photo bytes are stored as ArrayBuffers (Safari cannot reliably read Blobs back out of IndexedDB).
+   In memory each photo carries rep/orig as Blobs; toRecord() strips them before writing. */
+async function blobToBuf(b) { try { const a = await new Response(b).arrayBuffer(); return a && a.byteLength ? a : null; } catch (e) { return null; } }
+function dataUrlToBuf(u) { const bin = atob(u.split(',')[1]); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a.buffer; }
+function toRecord(p) { const { rep, orig, ...rest } = p; return rest; }
+async function hydratePhotos(list) {
+  const out = [];
+  for (const p of list) {
+    let dirty = false;
+    if (!p.repBuf) { // legacy record with Blob fields: migrate; fall back to the thumbnail if Safari lost the Blob
+      let rb = p.rep ? await blobToBuf(p.rep) : null; if (!rb) rb = dataUrlToBuf(p.thumb);
+      let ob = p.orig ? await blobToBuf(p.orig) : null; if (!ob) ob = rb;
+      p.repBuf = rb; p.origBuf = ob; p.origType = p.type || 'image/jpeg'; delete p.rep; delete p.orig; delete p.type; dirty = true;
+    }
+    p.rep = new Blob([p.repBuf], { type: 'image/jpeg' }); p.orig = new Blob([p.origBuf], { type: p.origType || 'image/jpeg' });
+    if (dirty) { try { await DB.put('photos', toRecord(p)); } catch (e) { } }
+    out.push(p);
+  }
+  return out.sort((a, b) => a.num - b.num);
+}
+function migrateInsp(i) {
+  if (!i) return i; // 'OK' status option renamed to 'Unremarkable'
+  for (const sid in i.data) { const d = i.data[sid]; for (const k in d) { const v = d[k]; if (v && typeof v === 'object' && !Array.isArray(v)) { for (const kk of ['s', 'l', 'r']) if (v[kk] === 'OK') v[kk] = 'Unremarkable'; } } }
+  return i;
+}
 
 /* ===================== helpers ===================== */
 const $ = s => document.querySelector(s);
@@ -72,12 +119,12 @@ async function route() {
   const h = location.hash.replace(/^#\/?/, '').split('/');
   $('#report').classList.add('hidden'); $('#app').classList.remove('hidden');
   if (h[0] === 'i' && h[1]) {
-    if (!S.insp || S.insp.id !== h[1]) { S.insp = await DB.get('insp', h[1]); S.photos = await DB.photosOf(h[1]); }
+    if (!S.insp || S.insp.id !== h[1]) { S.insp = migrateInsp(await DB.get('insp', h[1]) || null); S.photos = S.insp ? await DB.photosOf(h[1]) : []; }
     if (!S.insp) { location.hash = '#/'; return; }
     S.sec = h[2] && S.insp.enabled.includes(h[2]) ? h[2] : S.insp.enabled[0];
     renderInsp();
   } else if (h[0] === 'r' && h[1]) {
-    if (!S.insp || S.insp.id !== h[1]) { S.insp = await DB.get('insp', h[1]); S.photos = await DB.photosOf(h[1]); }
+    if (!S.insp || S.insp.id !== h[1]) { S.insp = migrateInsp(await DB.get('insp', h[1]) || null); S.photos = S.insp ? await DB.photosOf(h[1]) : []; }
     renderReport();
   } else { S.insp = null; renderList(); }
 }
@@ -265,15 +312,16 @@ async function addPhoto(file, sid, fid) {
   const im = await loadImg(file);
   const thumb = scale(im, 320, .7); const rep = await scale(im, 1600, .82, true);
   S.insp.photoSeq = (S.insp.photoSeq || 0) + 1;
-  const p = { id: uid(), inspId: S.insp.id, sec: sid, field: fid, num: S.insp.photoSeq, ts: new Date().toISOString(), caption: '', thumb, rep, orig: file, origName: file.name || '', type: file.type || 'image/jpeg' };
-  await DB.put('photos', p); S.photos.push(p); await saveNow();
+  const repBuf = await blobToBuf(rep); let origBuf = await blobToBuf(file); if (!origBuf || !origBuf.byteLength) origBuf = repBuf;
+  const p = { id: uid(), inspId: S.insp.id, sec: sid, field: fid, num: S.insp.photoSeq, ts: new Date().toISOString(), caption: '', thumb, repBuf, origBuf, origType: file.type || 'image/jpeg', origName: file.name || '' };
+  await DB.put('photos', p); p.rep = rep; p.orig = new Blob([origBuf], { type: p.origType }); S.photos.push(p); await saveNow();
 }
 function photoLabel(p) { const s = secById(p.sec); const f = s && fieldOf(s, p.field); return (s ? s.title : p.sec) + (f ? ' › ' + f.label : ''); }
 function photoModal(id) {
   const p = S.photos.find(x => x.id === id); if (!p) return;
   const url = URL.createObjectURL(p.rep);
-  modal(`<h3>Photo ${p.num} <button class="btn sm" data-close>Done</button></h3><div class="pv"><img src="${url}" style="width:100%;height:auto;max-height:50vh;object-fit:contain"></div><div class="pi"><div class="pn">${esc(photoLabel(p))}</div><div class="hint">${new Date(p.ts).toLocaleString()}</div><input class="in" id="pCap" value="${esc(p.caption)}" placeholder="Caption"><div class="acts"><button class="btn sm" id="pMove">Move to…</button><button class="btn sm danger" id="pDel">Delete</button></div></div>`, (box, close) => {
-    box.querySelector('#pCap').oninput = e => { p.caption = e.target.value; DB.put('photos', p); };
+  modal(`<h3>Photo ${p.num} <button class="btn sm" data-close>Done</button></h3><div class="pv"><img src="${url}" onerror="this.onerror=null;this.src=this.dataset.t" data-t="${p.thumb}" style="width:100%;height:auto;max-height:50vh;object-fit:contain"></div><div class="pi"><div class="pn">${esc(photoLabel(p))}</div><div class="hint">${new Date(p.ts).toLocaleString()}</div><input class="in" id="pCap" value="${esc(p.caption)}" placeholder="Caption"><div class="acts"><button class="btn sm" id="pMove">Move to…</button><button class="btn sm danger" id="pDel">Delete</button></div></div>`, (box, close) => {
+    box.querySelector('#pCap').oninput = e => { p.caption = e.target.value; DB.put('photos', toRecord(p)); };
     box.querySelector('#pDel').onclick = async () => { if (!confirm('Delete photo ' + p.num + '?')) return; await DB.del('photos', p.id); S.photos = S.photos.filter(x => x.id !== p.id); close(); renderSection(); renderSide(); };
     box.querySelector('#pMove').onclick = () => { close(); movePhoto(p); };
   });
@@ -281,7 +329,7 @@ function photoModal(id) {
 function movePhoto(p) {
   const opts = []; for (const sid of S.insp.enabled) { const s = secById(sid); for (const f of s.fields) opts.push(`<option value="${sid}|${f.id}" ${p.sec === sid && p.field === f.id ? 'selected' : ''}>${esc(s.short)} › ${esc(f.label)}</option>`); }
   modal(`<h3>Move photo ${p.num} <button class="btn sm" data-close>Cancel</button></h3><select class="in" id="mvSel">${opts.join('')}</select><div class="row" style="margin-top:12px"><button class="btn primary" id="mvOk">Move</button></div>`, (box, close) => {
-    box.querySelector('#mvOk').onclick = async () => { const [sid, fid] = box.querySelector('#mvSel').value.split('|'); p.sec = sid; p.field = fid; await DB.put('photos', p); close(); renderSection(); renderSide(); };
+    box.querySelector('#mvOk').onclick = async () => { const [sid, fid] = box.querySelector('#mvSel').value.split('|'); p.sec = sid; p.field = fid; await DB.put('photos', toRecord(p)); close(); renderSection(); renderSide(); };
   });
 }
 function renderPhotoLog() {
@@ -306,24 +354,36 @@ function valHtml(f, v, blank) {
     case 'tread': return `<div class="v">Outside ${esc(v.o || '—')}/32 · Middle ${esc(v.m || '—')}/32 · Inside ${esc(v.i || '—')}/32</div>`;
     case 'table': return tableHtml(f, v);
     case 'date': return `<div class="v">${esc(fmtDate(v))}</div>`;
-    default: return `<div class="v">${esc(v)}</div>`;
+    case 'vin': return `<div class="v code">${esc(v)}</div>`;
+    default: return `<div class="v ${/_dot$|_pn$|part number/i.test(f.id + ' ' + f.label) ? 'code' : ''}">${esc(v)}</div>`;
   }
 }
 function tableHtml(f, rows, blank) {
   const body = blank ? Array.from({ length: 8 }, () => `<tr class="blankrows">${f.columns.map(() => '<td></td>').join('')}</tr>`).join('') : rows.filter(r => isFilled(r)).map(r => `<tr>${f.columns.map(c => `<td>${esc(r[c.id])}</td>`).join('')}</tr>`).join('');
   return `<table><thead><tr>${f.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
 }
-function photosHtml(ps, urls) { if (!ps.length) return ''; return `<div class="photos">${ps.map(p => `<div class="ph"><img src="${urls[p.id]}"><b>Photo ${p.num}</b>${p.caption ? ' — ' + esc(p.caption) : ''}</div>`).join('')}</div>`; }
+function photosHtml(ps, urls, opts) { if (!ps.length) return ''; const link = opts && opts.appendix; return `<div class="photos">${ps.map(p => `<a class="ph" id="inl-${p.id}" ${link ? `href="#app-${p.id}"` : ''}><img src="${urls[p.id]}" onerror="this.onerror=null;this.src=this.dataset.t" data-t="${p.thumb}"><b>Photo ${p.num}</b>${link ? ' ↗' : ''}${p.caption ? ' — ' + esc(p.caption) : ''}</a>`).join('')}</div>`; }
+function appendixHtml(ps, urls, per) {
+  if (!ps.length) return '';
+  let h = `<h2 id="appendix">Photographs</h2><div class="appx per${per}">`;
+  for (const p of ps) {
+    const s = secById(p.sec); const f = s && fieldOf(s, p.field);
+    h += `<div class="ap" id="app-${p.id}"><img src="${urls[p.id]}" onerror="this.onerror=null;this.src=this.dataset.t" data-t="${p.thumb}"><div class="cap"><b>Photo ${p.num}</b>${p.caption ? ' — ' + esc(p.caption) : ''}<br><a href="#sec-${p.sec}">${esc(s ? s.title : p.sec)}${f ? ' › ' + esc(f.label) : ''}</a> · ${new Date(p.ts).toLocaleString()}</div></div>`;
+  }
+  return h + '</div>';
+}
 
 function renderReport() {
   const i = S.insp; $('#app').classList.add('hidden'); const R = $('#report'); R.classList.remove('hidden');
   $('#btnBack').classList.remove('hidden'); $('#btnBack').onclick = () => { location.hash = '#/i/' + i.id + '/' + (S.sec || ''); };
-  $('#ttl').textContent = 'Report — ' + inspTitle(i); $('#sub').textContent = ''; $('#topActs').innerHTML = '';
+  $('#ttl').textContent = 'Report — ' + inspTitle(i); $('#sub').textContent = ''; $('#topActs').innerHTML = '<button class="tb" id="btnPrint">Print / Save PDF</button>';
+  $('#btnPrint').onclick = () => window.print();
   const urls = {}; for (const p of S.photos) urls[p.id] = URL.createObjectURL(p.rep);
-  const opts = { blank: false, allFields: false, photos: true, log: true };
+  const turls = {}; for (const p of S.photos) turls[p.id] = p.thumb;
+  const opts = { blank: false, allFields: false, photos: true, log: true, appendix: true, per: 4 };
   const build = () => {
     const c = i.data.case || {}; const v = i.data.vehicle || {};
-    let h = `<div class="rp-tools"><button class="btn sm" id="rpPrint">Print / Save PDF</button><label><input type="checkbox" id="oBlank" ${opts.blank ? 'checked' : ''}> Blank form (for handwriting)</label><label><input type="checkbox" id="oAll" ${opts.allFields ? 'checked' : ''}> Include empty fields</label><label><input type="checkbox" id="oPh" ${opts.photos ? 'checked' : ''}> Photos inline</label><label><input type="checkbox" id="oLog" ${opts.log ? 'checked' : ''}> Photo log</label></div><div class="rp ${opts.blank ? 'blankform' : ''}">`;
+    let h = `<div class="rp-tools"><span style="font-weight:600;font-size:14px">Report options:</span><label><input type="checkbox" id="oBlank" ${opts.blank ? 'checked' : ''}> Blank form (for handwriting)</label><label><input type="checkbox" id="oAll" ${opts.allFields ? 'checked' : ''}> Include empty fields</label><label><input type="checkbox" id="oPh" ${opts.photos ? 'checked' : ''}> Photos inline</label><label><input type="checkbox" id="oLog" ${opts.log ? 'checked' : ''}> Photo log</label><label><input type="checkbox" id="oApx" ${opts.appendix ? 'checked' : ''}> Photo appendix</label><label>per page <select id="oPer" ${opts.appendix ? '' : 'disabled'}>${[1, 2, 4, 6].map(n => `<option value="${n}" ${opts.per === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label></div><div class="rp ${opts.blank ? 'blankform' : ''}">`;
     h += `<div class="cover"><h1>Vehicle Inspection Notes</h1><div class="k"><b>Case</b><span>${esc(c.case)}</span><b>Date</b><span>${esc(fmtDate(c.vi_date))}</span><b>Vehicle</b><span>${esc([v.year, v.make, v.model, v.trim].filter(Boolean).join(' '))}</span><b>VIN</b><span>${esc(v.vin)}</span><b>Location</b><span>${esc(c.vi_loc)}</span><b>Engineers</b><span>${esc(c.vi_eng)}</span><b>Client</b><span>${esc(c.client)}</span><b>File No.</b><span>${esc(c.fileno)}</span></div></div>`;
     let first = true;
     for (const sid of i.enabled) {
@@ -334,7 +394,7 @@ function renderReport() {
         if (f.type === 'heading') {
           closeGrp(); grpNa = !!i.na[sid + '.' + f.id];
           const ps = opts.photos ? photosFor(sid, f.id) : [];
-          grpHtml = `<h3>${esc(f.label)}${grpNa ? '<span class="na">NOT APPLICABLE / NOT EVALUATED</span>' : ''}</h3>`; grpBody = photosHtml(ps, urls);
+          grpHtml = `<h3>${esc(f.label)}${grpNa ? '<span class="na">NOT APPLICABLE / NOT EVALUATED</span>' : ''}</h3>`; grpBody = photosHtml(ps, opts.appendix ? turls : urls, opts);
           continue;
         }
         if (grpNa && !opts.blank) continue;
@@ -343,22 +403,24 @@ function renderReport() {
         if (!open) { grpBody += '<div class="kv">'; open = true; }
         const wide = f.full || ['area', 'table', 'lr', 'lrsel', 'multi'].includes(f.type) || ps.length;
         grpBody += `<div class="it ${wide ? 'full' : ''}"><div class="k">${esc(f.label)}</div>${vh || '<div class="v"></div>'}</div>`;
-        if (ps.length) { grpBody += `<div class="it full">${photosHtml(ps, urls)}</div>`; }
+        if (ps.length) { grpBody += `<div class="it full">${photosHtml(ps, opts.appendix ? turls : urls, opts)}</div>`; }
       }
       closeGrp();
       if (!body.trim() && !opts.allFields && !opts.blank) continue;
-      h += `<h2 class="${first ? 'first' : ''}">${esc(s.title)}</h2>${body}`; first = false;
+      h += `<h2 class="${first ? 'first' : ''}" id="sec-${sid}">${esc(s.title)}</h2>${body}`; first = false;
     }
     if (opts.log && S.photos.length && !opts.blank) {
-      h += `<h2>Photo Log</h2><table class="log"><thead><tr><th>No.</th><th>Section / Item</th><th>Caption</th><th>Time</th></tr></thead><tbody>${S.photos.slice().sort((a, b) => a.num - b.num).map(p => `<tr><td>${p.num}</td><td>${esc(photoLabel(p))}</td><td>${esc(p.caption)}</td><td>${new Date(p.ts).toLocaleString()}</td></tr>`).join('')}</tbody></table>`;
+      h += `<h2>Photo Log</h2><table class="log"><thead><tr><th>No.</th><th>Section / Item</th><th>Caption</th><th>Time</th></tr></thead><tbody>${S.photos.slice().sort((a, b) => a.num - b.num).map(p => `<tr><td>${opts.appendix ? `<a href="#app-${p.id}">${p.num}</a>` : p.num}</td><td><a href="#sec-${p.sec}">${esc(photoLabel(p))}</a></td><td>${esc(p.caption)}</td><td>${new Date(p.ts).toLocaleString()}</td></tr>`).join('')}</tbody></table>`;
     }
+    if (opts.appendix && !opts.blank) h += appendixHtml(S.photos.slice().sort((a, b) => a.num - b.num), urls, opts.per);
     h += `<div class="sig"><div>Engineer</div><div>Date</div></div><div class="foot">Generated ${new Date().toLocaleString()} · ${S.photos.length} photos · VI Notes</div></div>`;
     R.innerHTML = h;
-    R.querySelector('#rpPrint').onclick = () => window.print();
     R.querySelector('#oBlank').onchange = e => { opts.blank = e.target.checked; build(); };
     R.querySelector('#oAll').onchange = e => { opts.allFields = e.target.checked; build(); };
     R.querySelector('#oPh').onchange = e => { opts.photos = e.target.checked; build(); };
     R.querySelector('#oLog').onchange = e => { opts.log = e.target.checked; build(); };
+    R.querySelector('#oApx').onchange = e => { opts.appendix = e.target.checked; build(); };
+    R.querySelector('#oPer').onchange = e => { opts.per = +e.target.value; build(); };
   };
   build(); window.scrollTo(0, 0);
 }
@@ -395,24 +457,30 @@ async function unzip(buf) { // supports stored (0) and deflate (8, via Decompres
 }
 async function exportZip() {
   const i = S.insp; toast('Packaging…');
-  const meta = { app: 'vi-notes', version: 1, inspection: i, photos: S.photos.map(p => ({ id: p.id, num: p.num, sec: p.sec, field: p.field, ts: p.ts, caption: p.caption, file: `photos/P${String(p.num).padStart(3, '0')}.jpg`, origName: p.origName })) };
-  const entries = [{ name: 'inspection.json', data: new TextEncoder().encode(JSON.stringify(meta, null, 1)) }];
-  for (const p of S.photos) entries.push({ name: `photos/P${String(p.num).padStart(3, '0')}.jpg`, data: new Uint8Array(await p.orig.arrayBuffer()) });
-  const blob = zipStore(entries); const c = i.data.case || {};
-  const name = ((c.case || 'inspection').replace(/[^\w\- ]+/g, '').trim() || 'inspection') + '_' + (c.vi_date || today()) + '.zip';
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  toast('Exported ' + name);
+  try {
+    const meta = { app: 'vi-notes', version: 1, inspection: i, photos: S.photos.map(p => ({ id: p.id, num: p.num, sec: p.sec, field: p.field, ts: p.ts, caption: p.caption, file: `photos/P${String(p.num).padStart(3, '0')}.jpg`, origName: p.origName })) };
+    const entries = [{ name: 'inspection.json', data: new TextEncoder().encode(JSON.stringify(meta, null, 1)) }];
+    for (const p of S.photos) { const buf = p.origBuf || p.repBuf || dataUrlToBuf(p.thumb); entries.push({ name: `photos/P${String(p.num).padStart(3, '0')}.jpg`, data: new Uint8Array(buf) }); }
+    const blob = zipStore(entries); const c = i.data.case || {};
+    const name = ((c.case || 'inspection').replace(/[^\w\- ]+/g, '').trim() || 'inspection') + '_' + (c.vi_date || today()) + '.zip';
+    const file = new File([blob], name, { type: 'application/zip' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { // iPad / phone: share sheet (Save to Files, AirDrop, Mail…)
+      try { await navigator.share({ files: [file], title: name }); toast('Exported'); return; } catch (e) { if (e.name === 'AbortError') return; }
+    }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast('Exported ' + name);
+  } catch (e) { console.error(e); alert('Export failed: ' + (e.message || e)); }
 }
 $('#impInput').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   try {
     let meta, files = {};
     if (f.name.endsWith('.json')) meta = JSON.parse(await f.text()); else { files = await unzip(await f.arrayBuffer()); meta = JSON.parse(new TextDecoder().decode(files['inspection.json'])); }
-    const insp = meta.inspection; const exists = await DB.get('insp', insp.id);
+    const insp = migrateInsp(meta.inspection); const exists = await DB.get('insp', insp.id);
     if (exists && !confirm('An inspection with this ID already exists. Replace it?')) return;
     if (exists) { for (const p of await DB.photosOf(insp.id)) await DB.del('photos', p.id); }
     await DB.put('insp', insp);
-    for (const pm of meta.photos || []) { const data = files[pm.file]; if (!data) continue; const blob = new Blob([data], { type: 'image/jpeg' }); const im = await loadImg(blob); const p = { id: pm.id, inspId: insp.id, sec: pm.sec, field: pm.field, num: pm.num, ts: pm.ts, caption: pm.caption || '', thumb: scale(im, 320, .7), rep: await scale(im, 1600, .82, true), orig: blob, origName: pm.origName || '', type: 'image/jpeg' }; await DB.put('photos', p); }
+    for (const pm of meta.photos || []) { const data = files[pm.file]; if (!data) continue; const blob = new Blob([data], { type: 'image/jpeg' }); const im = await loadImg(blob); const p = { id: pm.id, inspId: insp.id, sec: pm.sec, field: pm.field, num: pm.num, ts: pm.ts, caption: pm.caption || '', thumb: scale(im, 320, .7), repBuf: await blobToBuf(await scale(im, 1600, .82, true)), origBuf: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), origType: 'image/jpeg', origName: pm.origName || '' }; await DB.put('photos', p); }
     S.insp = null; toast('Imported'); location.hash = '#/i/' + insp.id; route();
   } catch (err) { console.error(err); alert('Import failed: ' + err.message); }
 };

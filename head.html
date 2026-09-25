@@ -148,8 +148,9 @@ table.tbl .del{width:36px;height:40px;border:0;background:none;color:var(--muted
 
 /* ---------- report ---------- */
 #report{background:#fff;color:#000;padding:0}
-.rp{max-width:8.5in;margin:0 auto;padding:.5in .6in;font:11pt/1.35 Georgia,"Times New Roman",serif}
-.rp-tools{position:sticky;top:0;background:var(--brand);color:#fff;padding:10px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;z-index:5}
+.rp{max-width:8.5in;margin:0 auto;padding:.5in .6in;font:10.5pt/1.35 Helvetica,Arial,sans-serif;font-variant-numeric:lining-nums}
+.rp .v.code{font-family:ui-monospace,Menlo,Consolas,"Courier New",monospace;letter-spacing:.06em;font-size:10.5pt}
+.rp-tools{position:sticky;top:calc(56px + env(safe-area-inset-top));background:var(--brand);color:#fff;padding:10px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;z-index:5}
 .rp-tools label{display:flex;align-items:center;gap:6px;font-size:14px}
 .rp h1{font:700 20pt/1.2 Helvetica,Arial,sans-serif;color:var(--brand);letter-spacing:.02em}
 .rp .cover{border-bottom:3px solid var(--brand);padding-bottom:10px;margin-bottom:16px}
@@ -172,10 +173,25 @@ table.tbl .del{width:36px;height:40px;border:0;background:none;color:var(--muted
 .rp th{background:#eef2f7;font-family:Helvetica,Arial,sans-serif;font-size:8.5pt}
 .rp .blankrows td{height:20px}
 .rp .photos{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:6px 0 10px}
-.rp .ph{break-inside:avoid;font-size:8.5pt;font-family:Helvetica,Arial,sans-serif}
+.rp .ph{break-inside:avoid;font-size:8.5pt;font-family:Helvetica,Arial,sans-serif;color:#000;text-decoration:none;display:block}
+.rp a{color:var(--brand2)}
+.rp .ph b{text-decoration:underline}
 .rp .ph img{width:100%;aspect-ratio:4/3;object-fit:cover;border:1px solid #9ca3af;display:block}
 .rp .ph b{color:var(--brand)}
 .rp .log td:first-child{white-space:nowrap;font-weight:700;color:var(--brand)}
+.rp .appx{display:grid;gap:14px 16px;margin-top:8px}
+.rp .appx.per1{grid-template-columns:1fr}
+.rp .appx.per2{grid-template-columns:1fr}
+.rp .appx.per4{grid-template-columns:1fr 1fr}
+.rp .appx.per6{grid-template-columns:1fr 1fr}
+.rp .ap{break-inside:avoid;page-break-inside:avoid}
+.rp .ap img{width:100%;object-fit:contain;border:1px solid #9ca3af;display:block;background:#f3f4f6}
+.rp .appx.per1 .ap img{height:7.6in}
+.rp .appx.per2 .ap img{height:4.1in}
+.rp .appx.per4 .ap img{height:2.55in}
+.rp .appx.per6 .ap img{height:2.15in}
+.rp .ap .cap{font:9pt/1.3 Helvetica,Arial,sans-serif;margin-top:4px}
+.rp .ap .cap b{color:var(--brand)}
 .rp .foot{margin-top:30px;font-size:8.5pt;color:#6b7280;font-family:Helvetica,Arial,sans-serif;border-top:1px solid #d1d5db;padding-top:6px}
 .rp .sig{display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-top:30px}
 .rp .sig div{border-top:1px solid #000;padding-top:4px;font-size:9pt;font-family:Helvetica,Arial,sans-serif}
@@ -187,6 +203,7 @@ table.tbl .del{width:36px;height:40px;border:0;background:none;color:var(--muted
   .rp h2{-webkit-print-color-adjust:exact;print-color-adjust:exact}
   .rp.blankform h2{break-before:page;page-break-before:always}
   .rp h2.first{break-before:auto;page-break-before:auto}
+  .rp h2#appendix{break-before:page;page-break-before:always}
   .rp th{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style>

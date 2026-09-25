@@ -148,7 +148,8 @@ table.tbl .del{width:36px;height:40px;border:0;background:none;color:var(--muted
 
 /* ---------- report ---------- */
 #report{background:#fff;color:#000;padding:0}
-.rp{max-width:8.5in;margin:0 auto;padding:.5in .6in;font:11pt/1.35 Georgia,"Times New Roman",serif}
+.rp{max-width:8.5in;margin:0 auto;padding:.5in .6in;font:10.5pt/1.35 Helvetica,Arial,sans-serif;font-variant-numeric:lining-nums}
+.rp .v.code{font-family:ui-monospace,Menlo,Consolas,"Courier New",monospace;letter-spacing:.06em;font-size:10.5pt}
 .rp-tools{position:sticky;top:calc(56px + env(safe-area-inset-top));background:var(--brand);color:#fff;padding:10px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;z-index:5}
 .rp-tools label{display:flex;align-items:center;gap:6px;font-size:14px}
 .rp h1{font:700 20pt/1.2 Helvetica,Arial,sans-serif;color:var(--brand);letter-spacing:.02em}
@@ -986,7 +987,8 @@ function valHtml(f, v, blank) {
     case 'tread': return `<div class="v">Outside ${esc(v.o || '—')}/32 · Middle ${esc(v.m || '—')}/32 · Inside ${esc(v.i || '—')}/32</div>`;
     case 'table': return tableHtml(f, v);
     case 'date': return `<div class="v">${esc(fmtDate(v))}</div>`;
-    default: return `<div class="v">${esc(v)}</div>`;
+    case 'vin': return `<div class="v code">${esc(v)}</div>`;
+    default: return `<div class="v ${/_dot$|_pn$|part number/i.test(f.id + ' ' + f.label) ? 'code' : ''}">${esc(v)}</div>`;
   }
 }
 function tableHtml(f, rows, blank) {
