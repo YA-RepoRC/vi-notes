@@ -212,7 +212,7 @@ table.tbl .del{width:36px;height:40px;border:0;background:none;color:var(--muted
  * Field types: text, num, date, area, select, multi, yn, status, lr, tread, table, heading
  * Every field/heading can take photos. Edit freely — the app renders from this.
  */
-const STATUS_OPTS = ['OK', 'Comment', 'Not Evaluated'];
+const STATUS_OPTS = ['Unremarkable', 'Comment', 'Not Evaluated'];
 const INTACT = ['Intact', 'Broken Out', 'N/A'];
 
 function tireBlock(p, label, spare) {
@@ -517,7 +517,7 @@ const SCHEMA = [
       { id: 'fr_hdr', type: 'heading', label: 'Front Radar', na: true },
       { id: 'fr_loc', label: 'Location', type: 'text' },
       { id: 'fr_pn', label: 'Part Number', type: 'text' },
-      { id: 'fr_mount', label: 'Mounting / Bracket', type: 'status', opts: ['OK', 'Displaced', 'Damaged', 'Missing', 'Not Evaluated'] },
+      { id: 'fr_mount', label: 'Mounting / Bracket', type: 'status', opts: ['Unremarkable', 'Displaced', 'Damaged', 'Missing', 'Not Evaluated'] },
       { id: 'fr_cover', label: 'Fascia / Emblem Cover Condition', type: 'status', opts: STATUS_OPTS },
       { id: 'fr_aim', label: 'Aim / Alignment Evidence', type: 'text', full: true },
       { id: 'fc_hdr', type: 'heading', label: 'Forward Camera', na: true },
@@ -641,9 +641,56 @@ const DB = (() => {
     get: (store, k) => tx(store, 'readonly', s => s.get(k)),
     del: (store, k) => tx(store, 'readwrite', s => s.delete(k)),
     all: store => tx(store, 'readonly', s => s.getAll()),
-    photosOf: id => open().then(d => new Promise(res => { const r = d.transaction('photos').objectStore('photos').index('insp').getAll(id); r.onsuccess = () => res(r.result); })),
+    photosOf: id => open().then(d => new Promise(res => { const r = d.transaction('photos').objectStore('photos').index('insp').getAll(id); r.onsuccess = () => res(r.result); })).then(hydratePhotos),
   };
 })();
+
+/* Photo bytes are stored as ArrayBuffers (Safari cannot reliably read Blobs back out of IndexedDB).
+   In memory each photo carries rep/orig as Blobs; toRecord() strips them before writing. */
+async function blobToBuf(b) { try { return await new Response(b).arrayBuffer(); } catch (e) { return null; } }
+function dataUrlToBuf(u) { const bin = atob(u.split(',')[1]); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a.buffer; }
+function toRecord(p) { const { rep, orig, ...rest } = p; return rest; }
+async function hydratePhotos(list) {
+  const out = [];
+  for (const p of list) {
+    let dirty = false;
+    if (!p.repBuf) { // legacy record with Blob fields — migrate, fall back to thumbnail if the Blob is unreadable
+      let rb = p.rep && p.rep.size ? await blobToBuf(p.rep) : null; if (!rb || !rb.byteLength) rb = dataUrlToBuf(p.thumb);
+      let ob = p.orig && p.orig.size ? await blobToBuf(p.orig) : null; if (!ob || !ob.byteLength) ob = rb;
+      p.repBuf = rb; p.origBuf = ob; p.origType = p.type || 'image/jpeg'; delete p.rep; delete p.orig; dirty = true;
+    }
+    p.rep = new Blob([p.repBuf], { type: 'image/jpeg' }); p.orig = new Blob([p.origBuf], { type: p.origType || 'image/jpeg' });
+    if (dirty) { try { await DB.put('photos', toRecord(p)); } catch (e) { } }
+    out.push(p);
+  }
+  return out;
+}
+
+/* Photo bytes are stored as ArrayBuffers (Safari cannot reliably read Blobs back out of IndexedDB).
+   In memory each photo carries rep/orig as Blobs; toRecord() strips them before writing. */
+async function blobToBuf(b) { try { const a = await new Response(b).arrayBuffer(); return a && a.byteLength ? a : null; } catch (e) { return null; } }
+function dataUrlToBuf(u) { const bin = atob(u.split(',')[1]); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a.buffer; }
+function toRecord(p) { const { rep, orig, ...rest } = p; return rest; }
+async function hydratePhotos(list) {
+  const out = [];
+  for (const p of list) {
+    let dirty = false;
+    if (!p.repBuf) { // legacy record with Blob fields: migrate; fall back to the thumbnail if Safari lost the Blob
+      let rb = p.rep ? await blobToBuf(p.rep) : null; if (!rb) rb = dataUrlToBuf(p.thumb);
+      let ob = p.orig ? await blobToBuf(p.orig) : null; if (!ob) ob = rb;
+      p.repBuf = rb; p.origBuf = ob; p.origType = p.type || 'image/jpeg'; delete p.rep; delete p.orig; delete p.type; dirty = true;
+    }
+    p.rep = new Blob([p.repBuf], { type: 'image/jpeg' }); p.orig = new Blob([p.origBuf], { type: p.origType || 'image/jpeg' });
+    if (dirty) { try { await DB.put('photos', toRecord(p)); } catch (e) { } }
+    out.push(p);
+  }
+  return out.sort((a, b) => a.num - b.num);
+}
+function migrateInsp(i) {
+  if (!i) return i; // 'OK' status option renamed to 'Unremarkable'
+  for (const sid in i.data) { const d = i.data[sid]; for (const k in d) { const v = d[k]; if (v && typeof v === 'object' && !Array.isArray(v)) { for (const kk of ['s', 'l', 'r']) if (v[kk] === 'OK') v[kk] = 'Unremarkable'; } } }
+  return i;
+}
 
 /* ===================== helpers ===================== */
 const $ = s => document.querySelector(s);
@@ -688,12 +735,12 @@ async function route() {
   const h = location.hash.replace(/^#\/?/, '').split('/');
   $('#report').classList.add('hidden'); $('#app').classList.remove('hidden');
   if (h[0] === 'i' && h[1]) {
-    if (!S.insp || S.insp.id !== h[1]) { S.insp = await DB.get('insp', h[1]); S.photos = await DB.photosOf(h[1]); }
+    if (!S.insp || S.insp.id !== h[1]) { S.insp = migrateInsp(await DB.get('insp', h[1]) || null); S.photos = S.insp ? await DB.photosOf(h[1]) : []; }
     if (!S.insp) { location.hash = '#/'; return; }
     S.sec = h[2] && S.insp.enabled.includes(h[2]) ? h[2] : S.insp.enabled[0];
     renderInsp();
   } else if (h[0] === 'r' && h[1]) {
-    if (!S.insp || S.insp.id !== h[1]) { S.insp = await DB.get('insp', h[1]); S.photos = await DB.photosOf(h[1]); }
+    if (!S.insp || S.insp.id !== h[1]) { S.insp = migrateInsp(await DB.get('insp', h[1]) || null); S.photos = S.insp ? await DB.photosOf(h[1]) : []; }
     renderReport();
   } else { S.insp = null; renderList(); }
 }
@@ -881,15 +928,16 @@ async function addPhoto(file, sid, fid) {
   const im = await loadImg(file);
   const thumb = scale(im, 320, .7); const rep = await scale(im, 1600, .82, true);
   S.insp.photoSeq = (S.insp.photoSeq || 0) + 1;
-  const p = { id: uid(), inspId: S.insp.id, sec: sid, field: fid, num: S.insp.photoSeq, ts: new Date().toISOString(), caption: '', thumb, rep, orig: file, origName: file.name || '', type: file.type || 'image/jpeg' };
-  await DB.put('photos', p); S.photos.push(p); await saveNow();
+  const repBuf = await blobToBuf(rep); let origBuf = await blobToBuf(file); if (!origBuf || !origBuf.byteLength) origBuf = repBuf;
+  const p = { id: uid(), inspId: S.insp.id, sec: sid, field: fid, num: S.insp.photoSeq, ts: new Date().toISOString(), caption: '', thumb, repBuf, origBuf, origType: file.type || 'image/jpeg', origName: file.name || '' };
+  await DB.put('photos', p); p.rep = rep; p.orig = new Blob([origBuf], { type: p.origType }); S.photos.push(p); await saveNow();
 }
 function photoLabel(p) { const s = secById(p.sec); const f = s && fieldOf(s, p.field); return (s ? s.title : p.sec) + (f ? ' › ' + f.label : ''); }
 function photoModal(id) {
   const p = S.photos.find(x => x.id === id); if (!p) return;
   const url = URL.createObjectURL(p.rep);
-  modal(`<h3>Photo ${p.num} <button class="btn sm" data-close>Done</button></h3><div class="pv"><img src="${url}" style="width:100%;height:auto;max-height:50vh;object-fit:contain"></div><div class="pi"><div class="pn">${esc(photoLabel(p))}</div><div class="hint">${new Date(p.ts).toLocaleString()}</div><input class="in" id="pCap" value="${esc(p.caption)}" placeholder="Caption"><div class="acts"><button class="btn sm" id="pMove">Move to…</button><button class="btn sm danger" id="pDel">Delete</button></div></div>`, (box, close) => {
-    box.querySelector('#pCap').oninput = e => { p.caption = e.target.value; DB.put('photos', p); };
+  modal(`<h3>Photo ${p.num} <button class="btn sm" data-close>Done</button></h3><div class="pv"><img src="${url}" onerror="this.onerror=null;this.src=this.dataset.t" data-t="${p.thumb}" style="width:100%;height:auto;max-height:50vh;object-fit:contain"></div><div class="pi"><div class="pn">${esc(photoLabel(p))}</div><div class="hint">${new Date(p.ts).toLocaleString()}</div><input class="in" id="pCap" value="${esc(p.caption)}" placeholder="Caption"><div class="acts"><button class="btn sm" id="pMove">Move to…</button><button class="btn sm danger" id="pDel">Delete</button></div></div>`, (box, close) => {
+    box.querySelector('#pCap').oninput = e => { p.caption = e.target.value; DB.put('photos', toRecord(p)); };
     box.querySelector('#pDel').onclick = async () => { if (!confirm('Delete photo ' + p.num + '?')) return; await DB.del('photos', p.id); S.photos = S.photos.filter(x => x.id !== p.id); close(); renderSection(); renderSide(); };
     box.querySelector('#pMove').onclick = () => { close(); movePhoto(p); };
   });
@@ -897,7 +945,7 @@ function photoModal(id) {
 function movePhoto(p) {
   const opts = []; for (const sid of S.insp.enabled) { const s = secById(sid); for (const f of s.fields) opts.push(`<option value="${sid}|${f.id}" ${p.sec === sid && p.field === f.id ? 'selected' : ''}>${esc(s.short)} › ${esc(f.label)}</option>`); }
   modal(`<h3>Move photo ${p.num} <button class="btn sm" data-close>Cancel</button></h3><select class="in" id="mvSel">${opts.join('')}</select><div class="row" style="margin-top:12px"><button class="btn primary" id="mvOk">Move</button></div>`, (box, close) => {
-    box.querySelector('#mvOk').onclick = async () => { const [sid, fid] = box.querySelector('#mvSel').value.split('|'); p.sec = sid; p.field = fid; await DB.put('photos', p); close(); renderSection(); renderSide(); };
+    box.querySelector('#mvOk').onclick = async () => { const [sid, fid] = box.querySelector('#mvSel').value.split('|'); p.sec = sid; p.field = fid; await DB.put('photos', toRecord(p)); close(); renderSection(); renderSide(); };
   });
 }
 function renderPhotoLog() {
@@ -929,7 +977,7 @@ function tableHtml(f, rows, blank) {
   const body = blank ? Array.from({ length: 8 }, () => `<tr class="blankrows">${f.columns.map(() => '<td></td>').join('')}</tr>`).join('') : rows.filter(r => isFilled(r)).map(r => `<tr>${f.columns.map(c => `<td>${esc(r[c.id])}</td>`).join('')}</tr>`).join('');
   return `<table><thead><tr>${f.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
 }
-function photosHtml(ps, urls) { if (!ps.length) return ''; return `<div class="photos">${ps.map(p => `<div class="ph"><img src="${urls[p.id]}"><b>Photo ${p.num}</b>${p.caption ? ' — ' + esc(p.caption) : ''}</div>`).join('')}</div>`; }
+function photosHtml(ps, urls) { if (!ps.length) return ''; return `<div class="photos">${ps.map(p => `<div class="ph"><img src="${urls[p.id]}" onerror="this.onerror=null;this.src=this.dataset.t" data-t="${p.thumb}"><b>Photo ${p.num}</b>${p.caption ? ' — ' + esc(p.caption) : ''}</div>`).join('')}</div>`; }
 
 function renderReport() {
   const i = S.insp; $('#app').classList.add('hidden'); const R = $('#report'); R.classList.remove('hidden');
@@ -1011,24 +1059,30 @@ async function unzip(buf) { // supports stored (0) and deflate (8, via Decompres
 }
 async function exportZip() {
   const i = S.insp; toast('Packaging…');
-  const meta = { app: 'vi-notes', version: 1, inspection: i, photos: S.photos.map(p => ({ id: p.id, num: p.num, sec: p.sec, field: p.field, ts: p.ts, caption: p.caption, file: `photos/P${String(p.num).padStart(3, '0')}.jpg`, origName: p.origName })) };
-  const entries = [{ name: 'inspection.json', data: new TextEncoder().encode(JSON.stringify(meta, null, 1)) }];
-  for (const p of S.photos) entries.push({ name: `photos/P${String(p.num).padStart(3, '0')}.jpg`, data: new Uint8Array(await p.orig.arrayBuffer()) });
-  const blob = zipStore(entries); const c = i.data.case || {};
-  const name = ((c.case || 'inspection').replace(/[^\w\- ]+/g, '').trim() || 'inspection') + '_' + (c.vi_date || today()) + '.zip';
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  toast('Exported ' + name);
+  try {
+    const meta = { app: 'vi-notes', version: 1, inspection: i, photos: S.photos.map(p => ({ id: p.id, num: p.num, sec: p.sec, field: p.field, ts: p.ts, caption: p.caption, file: `photos/P${String(p.num).padStart(3, '0')}.jpg`, origName: p.origName })) };
+    const entries = [{ name: 'inspection.json', data: new TextEncoder().encode(JSON.stringify(meta, null, 1)) }];
+    for (const p of S.photos) { const buf = p.origBuf || p.repBuf || dataUrlToBuf(p.thumb); entries.push({ name: `photos/P${String(p.num).padStart(3, '0')}.jpg`, data: new Uint8Array(buf) }); }
+    const blob = zipStore(entries); const c = i.data.case || {};
+    const name = ((c.case || 'inspection').replace(/[^\w\- ]+/g, '').trim() || 'inspection') + '_' + (c.vi_date || today()) + '.zip';
+    const file = new File([blob], name, { type: 'application/zip' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { // iPad / phone: share sheet (Save to Files, AirDrop, Mail…)
+      try { await navigator.share({ files: [file], title: name }); toast('Exported'); return; } catch (e) { if (e.name === 'AbortError') return; }
+    }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast('Exported ' + name);
+  } catch (e) { console.error(e); alert('Export failed: ' + (e.message || e)); }
 }
 $('#impInput').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   try {
     let meta, files = {};
     if (f.name.endsWith('.json')) meta = JSON.parse(await f.text()); else { files = await unzip(await f.arrayBuffer()); meta = JSON.parse(new TextDecoder().decode(files['inspection.json'])); }
-    const insp = meta.inspection; const exists = await DB.get('insp', insp.id);
+    const insp = migrateInsp(meta.inspection); const exists = await DB.get('insp', insp.id);
     if (exists && !confirm('An inspection with this ID already exists. Replace it?')) return;
     if (exists) { for (const p of await DB.photosOf(insp.id)) await DB.del('photos', p.id); }
     await DB.put('insp', insp);
-    for (const pm of meta.photos || []) { const data = files[pm.file]; if (!data) continue; const blob = new Blob([data], { type: 'image/jpeg' }); const im = await loadImg(blob); const p = { id: pm.id, inspId: insp.id, sec: pm.sec, field: pm.field, num: pm.num, ts: pm.ts, caption: pm.caption || '', thumb: scale(im, 320, .7), rep: await scale(im, 1600, .82, true), orig: blob, origName: pm.origName || '', type: 'image/jpeg' }; await DB.put('photos', p); }
+    for (const pm of meta.photos || []) { const data = files[pm.file]; if (!data) continue; const blob = new Blob([data], { type: 'image/jpeg' }); const im = await loadImg(blob); const p = { id: pm.id, inspId: insp.id, sec: pm.sec, field: pm.field, num: pm.num, ts: pm.ts, caption: pm.caption || '', thumb: scale(im, 320, .7), repBuf: await blobToBuf(await scale(im, 1600, .82, true)), origBuf: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), origType: 'image/jpeg', origName: pm.origName || '' }; await DB.put('photos', p); }
     S.insp = null; toast('Imported'); location.hash = '#/i/' + insp.id; route();
   } catch (err) { console.error(err); alert('Import failed: ' + err.message); }
 };
