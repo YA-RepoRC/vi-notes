@@ -2109,29 +2109,71 @@ function deliverFile(file, label, note) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   toast('Saved ' + file.name); return Promise.resolve(true);
 }
-async function exportZip() {
-  const i = S.insp; const btn = $('#btnExport'); if (btn) { btn.disabled = true; btn.textContent = 'Packaging…'; }
-  try {
-    const meta = { app: 'vi-notes', version: 1, inspection: i, photos: S.photos.map(p => ({ id: p.id, num: p.num, sec: p.sec, field: p.field, ts: p.ts, caption: p.caption, file: `photos/P${String(p.num).padStart(3, '0')}.jpg`, origName: p.origName })) };
-    const entries = [{ name: 'inspection.json', data: new TextEncoder().encode(JSON.stringify(meta, null, 1)) }];
-    for (const p of S.photos) { const buf = p.origBuf || p.repBuf || dataUrlToBuf(p.thumb); entries.push({ name: `photos/P${String(p.num).padStart(3, '0')}.jpg`, data: new Uint8Array(buf) }); }
-    const blob = zipStore(entries); const c = i.data.case || {};
-    const name = ((c.case || 'inspection').replace(/[^\w\- ]+/g, '').trim() || 'inspection') + '_' + (c.vi_date || today()) + '.zip';
-    await deliverFile(new File([blob], name, { type: 'application/zip' }), 'Export', S.photos.length + ' photos');
-  } catch (e) { console.error(e); alert('Export failed: ' + (e.message || e)); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = 'Export'; } }
+/* Export is split into parts so no single zip has to be built in memory on the iPad: whole sections are
+   grouped until a part reaches PART_MB, a section bigger than that is split on its own. Every part carries
+   inspection.json (full record + the manifest of the photos in that part) so parts import in any order. */
+const PART_MB = 150;
+const PHOTO_FILE = p => `photos/P${String(p.num).padStart(3, '0')}.jpg`;
+const photoBuf = p => p.origBuf || p.repBuf || dataUrlToBuf(p.thumb);
+function exportParts(i) {
+  const cap = PART_MB * 1048576; const order = (i.enabled || []).slice(); for (const p of S.photos) if (!order.includes(p.sec)) order.push(p.sec);
+  const parts = []; let cur = null;
+  const flush = () => { if (cur && cur.photos.length) parts.push(cur); cur = null; };
+  for (const sid of order) {
+    const ph = S.photos.filter(p => p.sec === sid).sort((a, b) => a.num - b.num); if (!ph.length) continue;
+    const s = secById(sid); const title = s ? s.short || s.title : sid;
+    const sz = ph.reduce((a, p) => a + photoBuf(p).byteLength, 0);
+    if (sz > cap) { // one section bigger than a part: split it
+      flush(); let chunk = null, k = 0;
+      for (const p of ph) { const b = photoBuf(p).byteLength; if (!chunk || chunk.size + b > cap) { if (chunk) parts.push(chunk); k++; chunk = { secs: [title + ' (' + k + ')'], photos: [], size: 0 }; } chunk.photos.push(p); chunk.size += b; }
+      if (chunk) parts.push(chunk); continue;
+    }
+    if (cur && cur.size + sz > cap) flush();
+    if (!cur) cur = { secs: [], photos: [], size: 0 };
+    cur.secs.push(title); cur.photos.push(...ph); cur.size += sz;
+  }
+  flush();
+  if (!parts.length) parts.push({ secs: ['No photos'], photos: [], size: 0 });
+  return parts;
+}
+function buildPart(i, part, n, of) {
+  const meta = { app: 'vi-notes', version: 2, part: { n, of, sections: part.secs }, inspection: i, photos: part.photos.map(p => ({ id: p.id, num: p.num, sec: p.sec, field: p.field, ts: p.ts, caption: p.caption, file: PHOTO_FILE(p), origName: p.origName })) };
+  const entries = [{ name: 'inspection.json', data: new TextEncoder().encode(JSON.stringify(meta, null, 1)) }];
+  for (const p of part.photos) entries.push({ name: PHOTO_FILE(p), data: new Uint8Array(photoBuf(p)) });
+  const c = i.data.case || {}; const base = ((c.case || 'inspection').replace(/[^\w\- ]+/g, '').trim() || 'inspection') + '_' + (c.vi_date || today());
+  return new File([zipStore(entries)], base + (of > 1 ? `_part${n}of${of}` : '') + '.zip', { type: 'application/zip' });
+}
+function exportZip() {
+  const i = S.insp; const parts = exportParts(i); const of = parts.length; const done = new Set();
+  const share = !!(navigator.canShare && navigator.canShare({ files: [new File([new Uint8Array(1)], 'x.zip', { type: 'application/zip' })] }));
+  const rows = parts.map((p, k) => `<button class="btn exp-part" data-k="${k}" style="display:block;width:100%;text-align:left;margin-top:8px"><b>Part ${k + 1} of ${of}</b> — ${esc(p.secs.join(', '))}<br><span class="hint">${p.photos.length} photos · ${fmtMB(p.size)}</span></button>`).join('');
+  modal(`<h3>Export — ${of} ${of === 1 ? 'file' : 'files'} <button class="btn sm" data-close>Done</button></h3><div class="hint">${S.photos.length} photos, full resolution, grouped by section. ${share ? 'Tap each part and choose Save to Files (or AirDrop / Mail).' : 'Click each part to download it.'} Import any part on the other device; they merge into one inspection.</div>${rows}`, (box, close) => {
+    box.querySelectorAll('.exp-part').forEach(b => b.onclick = () => {
+      const k = +b.dataset.k; if (b.disabled) return; b.disabled = true;
+      let file; try { file = buildPart(i, parts[k], k + 1, of); } catch (e) { b.disabled = false; console.error(e); return alert('Export failed: ' + (e.message || e)); }
+      const ok = () => { done.add(k); b.disabled = false; b.style.opacity = .55; b.firstElementChild.textContent = `✓ Part ${k + 1} of ${of}`; file = null; if (done.size === of) { toast('All parts saved'); close(); } };
+      const fail = e => { b.disabled = false; file = null; if (e.name === 'AbortError') return; console.error(e); alert('Part ' + (k + 1) + ' could not be shared (' + (e.message || e.name) + ').'); };
+      if (share) navigator.share({ files: [file] }).then(ok, fail); // must be called inside this tap
+      else { const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 10000); ok(); }
+    });
+  });
 }
 $('#impInput').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   try {
     let meta, files = {};
     if (f.name.endsWith('.json')) meta = JSON.parse(await f.text()); else { files = await unzip(await f.arrayBuffer()); meta = JSON.parse(new TextDecoder().decode(files['inspection.json'])); }
-    const insp = migrateInsp(meta.inspection); const exists = await DB.get('insp', insp.id);
-    if (exists && !confirm('An inspection with this ID already exists. Replace it?')) return;
-    if (exists) { for (const p of await DB.photosOf(insp.id)) await DB.del('photos', p.id); }
-    await DB.put('insp', insp);
-    for (const pm of meta.photos || []) { const data = files[pm.file]; if (!data) continue; const blob = new Blob([data], { type: 'image/jpeg' }); const im = await loadImg(blob); const p = { id: pm.id, inspId: insp.id, sec: pm.sec, field: pm.field, num: pm.num, ts: pm.ts, caption: pm.caption || '', thumb: scale(im, 320, .7), repBuf: await blobToBuf(await scale(im, 1600, .82, true)), origBuf: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), origType: 'image/jpeg', origName: pm.origName || '' }; await DB.put('photos', p); }
-    S.insp = null; toast('Imported'); location.hash = '#/i/' + insp.id; route();
+    const insp = migrateInsp(meta.inspection); const exists = await DB.get('insp', insp.id); const part = meta.part;
+    if (exists && part) { // multi-part export: merge this part's photos into the existing record
+      if (!confirm(`Add part ${part.n} of ${part.of} (${(part.sections || []).join(', ')}) to the existing "${(insp.data.case || {}).case || 'inspection'}"?`)) return;
+    } else if (exists) {
+      if (!confirm('An inspection with this ID already exists. Replace it?')) return;
+      for (const p of await DB.photosOf(insp.id)) await DB.del('photos', p.id);
+    }
+    if (!exists || !part || new Date(insp.updated || 0) >= new Date(exists.updated || 0)) await DB.put('insp', insp);
+    let n = 0;
+    for (const pm of meta.photos || []) { const data = files[pm.file]; if (!data) continue; const blob = new Blob([data], { type: 'image/jpeg' }); const im = await loadImg(blob); const p = { id: pm.id, inspId: insp.id, sec: pm.sec, field: pm.field, num: pm.num, ts: pm.ts, caption: pm.caption || '', thumb: scale(im, 320, .7), repBuf: await blobToBuf(await scale(im, 1600, .82, true)), origBuf: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength), origType: 'image/jpeg', origName: pm.origName || '' }; await DB.put('photos', p); n++; }
+    S.insp = null; toast(part && part.of > 1 ? `Imported part ${part.n} of ${part.of} (${n} photos)` : 'Imported'); location.hash = '#/i/' + insp.id; route();
   } catch (err) { console.error(err); alert('Import failed: ' + err.message); }
 };
 
