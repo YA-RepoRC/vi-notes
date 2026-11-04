@@ -98,6 +98,13 @@ textarea.in{height:auto;min-height:88px;padding:10px 12px;resize:vertical;line-h
 .status .chips{margin-bottom:8px}
 .lr{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .lr label{font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px}
+.mc{display:grid;gap:10px;grid-template-columns:repeat(4,1fr)}.mc.c2{grid-template-columns:1fr 1fr}.mc.c3{grid-template-columns:repeat(3,1fr)}
+.mc label{font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px;white-space:nowrap}
+@media (max-width:600px){.mc{grid-template-columns:1fr 1fr}}
+.badge{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:1px 6px;margin-right:8px;vertical-align:1px}
+.proflist{display:grid;gap:10px}.proflist .prof{display:flex;flex-direction:column;align-items:flex-start;height:auto;padding:12px 14px;text-align:left}.proflist .prof small{color:var(--muted);font-weight:400;font-size:13px;margin-top:2px}
+.secgrp{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;padding:8px 4px 4px}
+.secother{margin-top:10px}.secother summary{font-size:15px;font-weight:600;padding:10px 4px;cursor:pointer;color:var(--accent)}
 .tread{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .tread label{font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px}
 .tread .u{display:flex;align-items:center;gap:6px}
@@ -167,6 +174,7 @@ table.tbl .del{width:36px;height:40px;border:0;background:none;color:var(--muted
 .rp .kv .v.blank{border-bottom:1px solid #000;min-height:1.6em}
 .rp .kv .v.blank.tall{min-height:4.5em;background:repeating-linear-gradient(to bottom,transparent 0,transparent 1.45em,#d1d5db 1.45em,#d1d5db calc(1.45em + 1px))}
 .rp .v .lrv{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.rp .v .lrv.c3{grid-template-columns:repeat(3,1fr)}.rp .v .lrv.c4{grid-template-columns:repeat(4,1fr)}
 .rp .v .lrv small{display:block;color:#6b7280;font-size:8pt;font-family:Helvetica,Arial,sans-serif}
 .rp table{width:100%;border-collapse:collapse;font-size:9.5pt;margin:4px 0}
 .rp th,.rp td{border:1px solid #9ca3af;padding:3px 6px;text-align:left;vertical-align:top}
@@ -631,6 +639,28 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 const STATUS_OPTS = ['Unremarkable', 'Comment', 'Not Evaluated'];
 const INTACT = ['Intact', 'Broken Out', 'N/A'];
 
+/* Vehicle types. A section with `profiles: [...]` only applies to those types; no `profiles` = every type.
+ * Sections a type doesn't list can still be switched on per inspection (Sections › Edit › Other). */
+const PROFILES = [
+  { id: 'pass', label: 'Passenger Vehicle', short: 'Passenger', hint: 'Car, SUV, pickup, van', doc: 'Vehicle Inspection Notes' },
+  { id: 'tractor', label: 'Class 8 Tractor', short: 'Tractor', hint: 'Day cab / sleeper, air brakes, 5th wheel', doc: 'Heavy Vehicle Inspection Notes' },
+  { id: 'straight', label: 'Straight Truck / Medium Duty', short: 'Straight Truck', hint: 'Box, dump, refuse, utility, Class 4–8 single unit', doc: 'Heavy Vehicle Inspection Notes' },
+  { id: 'trailer', label: 'Trailer', short: 'Trailer', hint: 'Van, reefer, flatbed, tanker, lowboy', doc: 'Trailer Inspection Notes' },
+  { id: 'bus', label: 'Bus / Motorcoach', short: 'Bus', hint: 'School bus, transit, motorcoach', doc: 'Bus Inspection Notes' },
+];
+const HEAVY = ['tractor', 'straight', 'bus'];          // powered heavy units
+const ALL_HEAVY = ['tractor', 'straight', 'bus', 'trailer'];
+const profileById = id => PROFILES.find(p => p.id === id) || PROFILES[0];
+const sectionsFor = pid => SCHEMA.filter(s => !s.profiles || s.profiles.includes(pid));
+const VEHICLE_SECS = ['vehicle', 'hvehicle', 'hvehicle_s', 'hvehicle_b', 'tvehicle'];
+const isVehicleSection = id => VEHICLE_SECS.includes(id);
+// the vehicle-info data block for an inspection (its own profile's first, then any other)
+function vehicleData(i) { const order = sectionsFor(i.profile || 'pass').map(s => s.id).filter(isVehicleSection).concat(VEHICLE_SECS); for (const k of order) if (i.data[k]) return i.data[k]; return {}; }
+
+const DUAL = ['LO', 'LI', 'RI', 'RO'];   // left outer, left inner, right inner, right outer
+const LR2 = ['Left', 'Right'];
+const AIR_COND = ['Unremarkable', 'Worn', 'Damaged', 'Leaking', 'Missing', 'Not Evaluated'];
+
 function tireBlock(p, label, spare) {
   const f = [
     { id: p + '_hdr', type: 'heading', label },
@@ -691,6 +721,89 @@ function suspBlock(items) {
   return items.map(i => ({ id: i[0], label: i[1], type: i[2] || 'lr', opts: i[3], full: true }));
 }
 
+/* ---- heavy-vehicle blocks ---- */
+// 'mc' = one text input per column (values stored as {c0, c1, …}); used for dual wheels (LO/LI/RI/RO) and per-wheel-end (Left/Right) rows
+const mc = (id, label, cols, extra) => Object.assign({ id, label, type: 'mc', cols, full: true }, extra || {});
+
+function axleTires(p, label, cols, opts = {}) {
+  return [
+    { id: p + '_hdr', type: 'heading', label, na: !!opts.na },
+    mc(p + '_brand', 'Brand / Model', cols),
+    mc(p + '_size', 'Size', cols),
+    mc(p + '_dot', 'DOT', cols),
+    mc(p + '_psi', 'Pressure (PSI)', cols),
+    mc(p + '_tread', 'Tread Depth (/32") — O / M / I', cols, { hint: 'enter outside/middle/inside, e.g. 12/12/11' }),
+    mc(p + '_cond', 'Tire Condition', cols, { hint: 'unseated, run-flat, cuts, sidewall damage, retread / cap separation, wear pattern' }),
+    mc(p + '_wheel', 'Wheel (size / material / type)', cols, { hint: 'e.g. 22.5×8.25 steel, hub-piloted / stud-piloted, aluminum' }),
+    mc(p + '_wcond', 'Wheel / Fastener Condition', cols, { hint: 'cracks, elongated holes, loose or missing nuts, rust streaks, bent' }),
+    mc(p + '_valve', 'Valve Stem Position', cols),
+    { id: p + '_hub', label: 'Hub / Bearing / Seal / Hubcap', type: 'lr', full: true },
+    { id: p + '_notes', label: 'Notes', type: 'area', full: true },
+  ];
+}
+
+function axleBrakes(p, label, opts = {}) { // one entry per wheel end (Left / Right)
+  return [
+    { id: p + '_hdr', type: 'heading', label, na: !!opts.na },
+    mc(p + '_btype', 'Brake Type', LR2, { hint: 'S-cam drum / air disc / wedge / hydraulic disc' }),
+    mc(p + '_chamber', 'Chamber Type / Size', LR2, { hint: 'e.g. Type 30, 30/30 spring brake, long stroke' }),
+    mc(p + '_slack', 'Slack Adjuster (auto / manual, make)', LR2),
+    mc(p + '_stroke', 'Pushrod Stroke — Applied (in)', LR2, { hint: 'measured at 80–90 psi application, engine off' }),
+    mc(p + '_limit', 'Adjustment Limit (in)', LR2, { hint: 'per chamber type, 49 CFR 393.47 table — e.g. Type 30 = 2.0, Type 30 long stroke = 2.5' }),
+    mc(p + '_lining', 'Lining / Pad Thickness (in)', LR2),
+    mc(p + '_drum', 'Drum Diameter / Rotor Thickness (in)', LR2),
+    mc(p + '_cond', 'Component Condition', LR2, { hint: 'drum heat checks / cracks, lining contamination, loose or missing hardware, cam bushing wear, hose / line condition' }),
+    { id: p + '_notes', label: 'Notes', type: 'area', full: true },
+  ];
+}
+
+function heavyVehicleFields(kind) { // kind: 'tractor' | 'straight' | 'bus'
+  const f = [
+    { id: 'vin', label: 'VIN', type: 'vin', full: true },
+    { id: 'year', label: 'Model Year', type: 'text' },
+    { id: 'make', label: 'Make', type: 'text' },
+    { id: 'model', label: 'Model', type: 'text' },
+    { id: 'trim', label: 'Series / Model Code', type: 'text' },
+    { id: 'build', label: 'Build Date (cert label)', type: 'text' },
+    { id: 'unit', label: 'Unit / Fleet No.', type: 'text' },
+    { id: 'carrier', label: 'Carrier / Owner (as marked)', type: 'text' },
+    { id: 'usdot', label: 'USDOT No.', type: 'text' },
+    { id: 'mc', label: 'MC / Other Authority No.', type: 'text' },
+    { id: 'license', label: 'License Plate / State', type: 'text' },
+    { id: 'color', label: 'Color', type: 'text' },
+  ];
+  if (kind === 'tractor') f.push({ id: 'cab', label: 'Cab Configuration', type: 'select', opts: ['Day Cab', 'Sleeper — Mid-Roof', 'Sleeper — Raised Roof', 'Sleeper — Flat Top', 'Cabover'] }, { id: 'sleeper', label: 'Sleeper Length (in)', type: 'text' });
+  if (kind === 'straight') f.push({ id: 'body', label: 'Body Type', type: 'select', opts: ['Dry Van / Box', 'Refrigerated Box', 'Flatbed / Stake', 'Dump', 'Refuse', 'Tank', 'Utility / Service', 'Wrecker / Rollback', 'Concrete Mixer', 'Cab & Chassis', 'Other'] }, { id: 'bodymfr', label: 'Body Manufacturer / Upfitter', type: 'text' }, { id: 'cab', label: 'Cab Type', type: 'select', opts: ['Conventional', 'Cabover / LCF', 'Crew Cab', 'Extended Cab'] });
+  if (kind === 'bus') f.push({ id: 'body', label: 'Bus Type', type: 'select', opts: ['School Bus — Type A', 'School Bus — Type C', 'School Bus — Type D', 'Transit', 'Motorcoach', 'Shuttle / Cutaway', 'Other'] }, { id: 'bodymfr', label: 'Body Manufacturer (if body-on-chassis)', type: 'text' }, { id: 'chassismfr', label: 'Chassis Manufacturer / Model', type: 'text' }, { id: 'capacity', label: 'Designed Seating Capacity', type: 'text' });
+  f.push(
+    { id: 'eng_make', label: 'Engine Make / Model', type: 'text' },
+    { id: 'eng_serial', label: 'Engine Serial No.', type: 'text' },
+    { id: 'eng_hp', label: 'Rated HP / Torque (data plate)', type: 'text' },
+    { id: 'fuel', label: 'Fuel / Power', type: 'select', opts: ['Diesel', 'Gasoline', 'CNG / LNG', 'Propane', 'Battery Electric', 'Hybrid', 'Hydrogen'] },
+    { id: 'trans', label: 'Transmission', type: 'select', opts: ['Manual', 'Automated Manual (AMT)', 'Automatic', 'EV Direct Drive'] },
+    { id: 'trans_model', label: 'Transmission Make / Model', type: 'text' },
+    { id: 'retarder', label: 'Engine Brake / Retarder', type: 'multi', opts: ['Engine (Jake) Brake', 'Exhaust Brake', 'Transmission Retarder', 'Driveline Retarder', 'None'], full: true },
+    { id: 'axles', label: 'Axle Configuration', type: 'select', opts: ['4×2', '6×2', '6×4', '8×4', '8×6', '10×4', 'Other'] },
+    { id: 'liftaxle', label: 'Lift / Pusher / Tag Axle', type: 'select', opts: ['None', 'Pusher', 'Tag', 'Both'] },
+    { id: 'wb', label: 'Wheelbase (in)', type: 'text' },
+    { id: 'gvwr', label: 'GVWR (lbs)', type: 'num' },
+    { id: 'gcwr', label: 'GCWR (lbs)', type: 'num' },
+    { id: 'gawr', label: 'Axle Ratings (cert label)', type: 'table', full: true, columns: [{ id: 'axle', label: 'Axle' }, { id: 'gawr', label: 'GAWR (lbs)' }, { id: 'tire', label: 'Tire Size' }, { id: 'rim', label: 'Rim' }, { id: 'psi', label: 'Cold PSI' }], seed: kind === 'tractor' ? ['Steer', 'Drive 1', 'Drive 2'] : ['Front', 'Rear'] },
+    { id: 'mileage', label: 'Odometer (mi)', type: 'num' },
+    { id: 'hours', label: 'Engine Hours', type: 'num' },
+    { id: 'annual', label: 'Periodic (Annual) Inspection Sticker / Date', type: 'text', hint: '49 CFR 396.17 decal or report' },
+    { id: 'reg', label: 'Registration / Cab Card Date', type: 'text' },
+    { id: 'ifta', label: 'IFTA / IRP / Permits Noted', type: 'text' },
+    { id: 'opt', label: 'Equipment Noted', type: 'multi', full: true, opts: ['ABS', 'ATC', 'ESC / RSC', 'Collision Mitigation', 'Adaptive Cruise', 'Lane Departure Warning', 'Side Object Detection', 'Forward Camera', 'Driver-Facing Camera', 'ELD', 'Telematics / Tracking', 'Speed Limiter', 'APU', 'Air Ride Cab', 'Air Ride Seat', 'PTO', 'Lift Gate'] },
+    { id: 'storage', label: 'Vehicle Storage Condition', type: 'area', full: true },
+    { id: 'postcrash', label: 'Post-Crash Changes / Repairs', type: 'area', full: true },
+    { id: 'missing', label: 'Parts / Pieces Missing', type: 'area', full: true },
+    { id: 'companion', label: 'Companion Unit (trailer / tractor) — see separate inspection', type: 'text', full: true, hint: 'VIN / unit no. of the coupled unit if inspected under its own record' },
+    { id: 'notes', label: 'Notes', type: 'area', full: true },
+  );
+  return f;
+}
+
 const SCHEMA = [
   {
     id: 'case', title: 'Case & Inspection', short: 'Case', always: true, fields: [
@@ -705,7 +818,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'vehicle', title: 'Vehicle Information', short: 'Vehicle', fields: [
+    id: 'vehicle', profiles: ['pass'], title: 'Vehicle Information', short: 'Vehicle', fields: [
       { id: 'vin', label: 'VIN', type: 'vin', full: true },
       { id: 'year', label: 'Model Year', type: 'text' },
       { id: 'make', label: 'Make', type: 'text' },
@@ -733,13 +846,52 @@ const SCHEMA = [
       { id: 'notes', label: 'Notes', type: 'area', full: true },
     ]
   },
+  { id: 'hvehicle', profiles: ['tractor'], title: 'Tractor Information', short: 'Tractor', fields: heavyVehicleFields('tractor') },
+  { id: 'hvehicle_s', profiles: ['straight'], title: 'Truck Information', short: 'Truck', fields: heavyVehicleFields('straight') },
+  { id: 'hvehicle_b', profiles: ['bus'], title: 'Bus Information', short: 'Bus', fields: heavyVehicleFields('bus') },
+  {
+    id: 'tvehicle', profiles: ['trailer'], title: 'Trailer Information', short: 'Trailer', fields: [
+      { id: 'vin', label: 'VIN', type: 'vin', full: true },
+      { id: 'year', label: 'Model Year', type: 'text' },
+      { id: 'make', label: 'Make', type: 'text' },
+      { id: 'model', label: 'Model', type: 'text' },
+      { id: 'ttype', label: 'Trailer Type', type: 'select', opts: ['Dry Van', 'Refrigerated Van', 'Flatbed', 'Drop Deck / Step Deck', 'Lowboy / RGN', 'Tanker', 'Dump', 'Hopper / Grain', 'Livestock', 'Car Hauler', 'Intermodal Chassis', 'Pup / Doubles', 'Other'] },
+      { id: 'unit', label: 'Unit / Fleet No.', type: 'text' },
+      { id: 'carrier', label: 'Carrier / Owner (as marked)', type: 'text' },
+      { id: 'license', label: 'License Plate / State', type: 'text' },
+      { id: 'build', label: 'Build Date (cert label)', type: 'text' },
+      { id: 'length', label: 'Length (ft)', type: 'text' },
+      { id: 'width', label: 'Width (in)', type: 'text' },
+      { id: 'height', label: 'Overall Height (in)', type: 'text' },
+      { id: 'gvwr', label: 'GVWR (lbs)', type: 'num' },
+      { id: 'gawr', label: 'Axle Ratings (cert label)', type: 'table', full: true, columns: [{ id: 'axle', label: 'Axle' }, { id: 'gawr', label: 'GAWR (lbs)' }, { id: 'tire', label: 'Tire Size' }, { id: 'rim', label: 'Rim' }, { id: 'psi', label: 'Cold PSI' }], seed: ['Axle 1', 'Axle 2'] },
+      { id: 'axles', label: 'Axle Count / Configuration', type: 'select', opts: ['Single', 'Tandem', 'Tandem — Spread', 'Tridem', 'Quad', 'Other'] },
+      { id: 'slider', label: 'Sliding Tandem', type: 'yn' },
+      { id: 'annual', label: 'Periodic (Annual) Inspection Sticker / Date', type: 'text' },
+      { id: 'reg', label: 'Registration Date', type: 'text' },
+      { id: 'color', label: 'Color / Markings', type: 'text' },
+      { id: 'reefer', label: 'Reefer Unit (make / model / hours / setpoint)', type: 'text', full: true },
+      { id: 'opt', label: 'Equipment Noted', type: 'multi', full: true, opts: ['ABS', 'TPMS / Auto-Inflation', 'Telematics / Tracking', 'Lift Gate', 'Side Skirts', 'Rear Fairing / Tail', 'Side Underride Guards', 'Cargo Camera', 'Air Ride'] },
+      { id: 'load_hdr', type: 'heading', label: 'Cargo / Load' },
+      { id: 'cargo', label: 'Cargo Description / Weight', type: 'area', full: true },
+      { id: 'secure', label: 'Securement (straps, chains, load bars, blocking)', type: 'area', full: true },
+      { id: 'shift', label: 'Load Shift / Spill Evidence', type: 'area', full: true },
+      { id: 'seals', label: 'Seals / BOL / Placards', type: 'text', full: true },
+      { id: 'storage', label: 'Storage Condition', type: 'area', full: true },
+      { id: 'postcrash', label: 'Post-Crash Changes / Repairs', type: 'area', full: true },
+      { id: 'missing', label: 'Parts / Pieces Missing', type: 'area', full: true },
+      { id: 'companion', label: 'Companion Tractor — see separate inspection', type: 'text', full: true, hint: 'VIN / unit no. of the tractor if inspected under its own record' },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
   {
     id: 'signin', title: 'Sign-In', short: 'Sign-In', fields: [
       { id: 'list', label: 'Attendees', type: 'table', full: true, columns: [{ id: 'name', label: 'Name' }, { id: 'co', label: 'Company / Representing' }, { id: 'phone', label: 'Phone / Email' }] },
     ]
   },
+  /* ===================== PASSENGER VEHICLES ===================== */
   {
-    id: 'exterior', title: 'Exterior & Damage', short: 'Exterior', fields: [
+    id: 'exterior', profiles: ['pass'], title: 'Exterior & Damage', short: 'Exterior', fields: [
       { id: 'walk', label: 'Walk-Around Overview', type: 'area', full: true, hint: 'Overall damage description, PDOF, principal contact area' },
       { id: 'front', label: 'Front', type: 'area', full: true },
       { id: 'left', label: 'Left Side', type: 'area', full: true },
@@ -754,7 +906,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'tires', title: 'Wheels & Tires', short: 'Tires', fields: [
+    id: 'tires', profiles: ['pass'], title: 'Wheels & Tires', short: 'Tires', fields: [
       ...tireBlock('lf', 'Left Front'),
       ...tireBlock('rf', 'Right Front'),
       ...tireBlock('lr', 'Left Rear'),
@@ -763,7 +915,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'glass', title: 'Glass & Engine Compartment', short: 'Glass/Engine', fields: [
+    id: 'glass', profiles: ['pass'], title: 'Glass & Engine Compartment', short: 'Glass/Engine', fields: [
       { id: 'g_hdr', type: 'heading', label: 'Vehicle Glass' },
       { id: 'g_ws', label: 'Windshield', type: 'status', opts: ['Intact', 'Broken Out', 'Cracked', 'Replaced'] },
       { id: 'g_drv', label: 'Driver', type: 'status', opts: INTACT },
@@ -794,7 +946,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'fsusp', title: 'Front Suspension', short: 'Front Susp', fields: [
+    id: 'fsusp', profiles: ['pass'], title: 'Front Suspension', short: 'Front Susp', fields: [
       { id: 'hdr', type: 'heading', label: 'Front Suspension — Left / Right' },
       ...suspBlock([
         ['frame', 'Frame Rail'], ['axle', 'Front Axle / Half Shaft'], ['uca', 'Upper Control Arm'], ['lca', 'Lower Control Arm'],
@@ -807,7 +959,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'rsusp', title: 'Rear Suspension', short: 'Rear Susp', fields: [
+    id: 'rsusp', profiles: ['pass'], title: 'Rear Suspension', short: 'Rear Susp', fields: [
       { id: 'hdr', type: 'heading', label: 'Rear Suspension — Left / Right' },
       ...suspBlock([
         ['frame', 'Frame Rail'], ['axle', 'Rear Axle'], ['uca', 'Upper Control Arm'], ['lca', 'Lower Control Arm'],
@@ -821,7 +973,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'brakes', title: 'Brake Measurements', short: 'Brakes', fields: [
+    id: 'brakes', profiles: ['pass'], title: 'Brake Measurements', short: 'Brakes', fields: [
       { id: 'fp_hdr', type: 'heading', label: 'Front Pads — Friction Material Only (inches)' },
       { id: 'fp_lf_in', label: 'LF Inner Pad', type: 'num' }, { id: 'fp_lf_out', label: 'LF Outer Pad', type: 'num' },
       { id: 'fp_lf_bp', label: 'LF Backing Plate', type: 'num' }, { id: 'fp_lf_rotor', label: 'LF Rotor Thickness', type: 'num' },
@@ -841,7 +993,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'interior', title: 'Interior', short: 'Interior', fields: [
+    id: 'interior', profiles: ['pass'], title: 'Interior', short: 'Interior', fields: [
       { id: 'f_hdr', type: 'heading', label: 'Front Row', na: true },
       { id: 'f_mirror', label: 'Rear View Mirror', type: 'status', opts: STATUS_OPTS },
       { id: 'f_seattype', label: 'Front Seat Type', type: 'select', opts: ['Bucket', 'Bench', 'Split Bench'] },
@@ -881,7 +1033,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'belts', title: 'Seatbelts', short: 'Seatbelts', fields: [
+    id: 'belts', profiles: ['pass'], title: 'Seatbelts', short: 'Seatbelts', fields: [
       ...beltBlock('d', 'Driver', { pt: true }),
       ...beltBlock('cf', 'Center Front', { center: true }),
       ...beltBlock('rf', 'Right Front', { pt: true }),
@@ -895,7 +1047,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'srs', title: 'SRS / Airbags', short: 'SRS', fields: [
+    id: 'srs', profiles: ['pass'], title: 'SRS / Airbags', short: 'SRS', fields: [
       { id: 'lamp', label: 'SRS Warning Lamp (key on)', type: 'select', opts: ['Off (normal)', 'On', 'Flashing', 'No Power', 'Not Evaluated'] },
       { id: 'sysdesc', label: 'System Description', type: 'area', full: true, hint: 'Airbag count/locations per build sheet, generation' },
       ...airbagBlock('df', 'Driver Frontal Airbag'),
@@ -926,7 +1078,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'adas', title: 'ADAS', short: 'ADAS', fields: [
+    id: 'adas', profiles: ['pass'], title: 'ADAS', short: 'ADAS', fields: [
       { id: 'eq', label: 'Systems Equipped (per build / window sticker / observation)', type: 'multi', full: true, opts: ['FCW', 'AEB', 'Pedestrian Detection', 'ACC', 'Stop & Go ACC', 'LDW', 'LKA', 'Lane Centering', 'BSM', 'RCTA', 'Rear AEB', 'Park Sensors', 'Rear Camera', 'Surround View', 'Auto High Beam', 'Traffic Sign Recognition', 'Driver Monitoring', 'Hands-Free Highway Assist', 'None'] },
       { id: 'src', label: 'Equipment Verified Via', type: 'multi', opts: ['Build Sheet', 'Window Sticker', 'Owner\'s Manual', 'Visual', 'Scan Tool', 'Infotainment Menu'], full: true },
       { id: 'lamp', label: 'ADAS Warning / Fault Lamps (key on)', type: 'area', full: true },
@@ -956,7 +1108,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'diag', title: 'Diagnostics & Electrical', short: 'Diagnostics', fields: [
+    id: 'diag', profiles: ['pass'], title: 'Diagnostics & Electrical', short: 'Diagnostics', fields: [
       { id: 'tool', label: 'Scan Tool / Software Version', type: 'text', full: true },
       { id: 'power', label: 'Vehicle Power For Scan', type: 'select', opts: ['Vehicle Battery', 'External 12V Supply', 'Direct-to-Module', 'No Power Available'] },
       { id: 'batt', label: 'Battery Voltage at Scan (V)', type: 'num' },
@@ -972,7 +1124,7 @@ const SCHEMA = [
     ]
   },
   {
-    id: 'edr', title: 'EDR / CDR', short: 'EDR', fields: [
+    id: 'edr', profiles: ['pass'], title: 'EDR / CDR', short: 'EDR', fields: [
       { id: 'status', label: 'Event Data Recorder', type: 'select', full: true, opts: ['N/A (not supported)', 'Previously Imaged', 'Imaged at Inspection — DLC', 'Imaged at Inspection — Direct-to-Module', 'Not Imaged (module removed for later download)', 'Not Imaged'] },
       { id: 'tool', label: 'Tool / Software Version', type: 'text' },
       { id: 'cable', label: 'Cable / Adapter Used', type: 'text' },
@@ -984,6 +1136,459 @@ const SCHEMA = [
       { id: 'ign', label: 'Ignition Cycles at Event / at Download', type: 'text' },
       { id: 'files', label: 'CDR File Name(s)', type: 'area', full: true },
       { id: 'chain', label: 'Chain of Custody / Module Retained By', type: 'text', full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  /* ===================== HEAVY VEHICLES (tractor / straight truck / bus) ===================== */
+  {
+    id: 'hexterior', profiles: HEAVY, title: 'Exterior & Damage', short: 'Exterior', fields: [
+      { id: 'walk', label: 'Walk-Around Overview', type: 'area', full: true, hint: 'Overall damage description, PDOF, principal contact area, induced vs. direct' },
+      { id: 'front', label: 'Front (bumper, grille, hood, headlamps)', type: 'area', full: true },
+      { id: 'left', label: 'Left Side (cab, doors, steps, tanks, fairings)', type: 'area', full: true },
+      { id: 'right', label: 'Right Side', type: 'area', full: true },
+      { id: 'rear', label: 'Rear (cab back / body rear / doors)', type: 'area', full: true },
+      { id: 'roof', label: 'Roof / Fairings / Sleeper Roof', type: 'area', full: true },
+      { id: 'body', label: 'Body / Box / Bed (straight truck & bus)', type: 'area', full: true },
+      { id: 'frame', label: 'Frame Rails & Crossmembers', type: 'area', full: true, hint: 'bends, twist, cracks, diamond, buckling — measure & photograph' },
+      { id: 'under', label: 'Undercarriage / Driveline / Fuel Tanks', type: 'area', full: true },
+      { id: 'tanks', label: 'Fuel Tank(s) — condition, straps, leaks, fill level', type: 'text', full: true },
+      { id: 'batt', label: 'Battery Box / Batteries', type: 'status', opts: STATUS_OPTS },
+      { id: 'mirrors', label: 'Mirrors (West Coast / convex / fender / hood)', type: 'text', full: true },
+      { id: 'transfer', label: 'Paint / Material Transfer', type: 'area', full: true },
+      { id: 'guard', label: 'Rear Impact Guard (straight truck / bus)', type: 'status', opts: ['Unremarkable', 'Damaged', 'Not Equipped', 'Not Evaluated'] },
+      { id: 'crush', label: 'Crush / Deformation Measurements Taken', type: 'select', opts: ['Yes', 'No', 'Via 3D Scan'] },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'htires', profiles: ['tractor'], title: 'Axles, Wheels & Tires', short: 'Tires', fields: [
+      { id: 'summary', label: 'Axle / Tire Summary', type: 'area', full: true, hint: 'axle count & spacing, matching duals, mixed brands/sizes, retreads' },
+      ...axleTires('st', 'Steer Axle', LR2),
+      ...axleTires('d1', 'Drive Axle 1 (Forward Rear)', DUAL),
+      ...axleTires('d2', 'Drive Axle 2 (Rear Rear)', DUAL, { na: true }),
+      ...axleTires('lx', 'Lift / Pusher / Tag Axle', DUAL, { na: true }),
+      { id: 'spare', label: 'Spare Tire / Carrier', type: 'text', full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'htires_s', profiles: ['straight', 'bus'], title: 'Axles, Wheels & Tires', short: 'Tires', fields: [
+      { id: 'summary', label: 'Axle / Tire Summary', type: 'area', full: true, hint: 'axle count, single vs dual rear, mixed brands/sizes, retreads' },
+      ...axleTires('st', 'Front / Steer Axle', LR2),
+      ...axleTires('r1', 'Rear Axle', DUAL),
+      ...axleTires('r2', 'Second Rear / Tag Axle', DUAL, { na: true }),
+      { id: 'spare', label: 'Spare Tire / Carrier', type: 'text', full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'hsteer', profiles: HEAVY, title: 'Steering & Front Suspension', short: 'Steering', fields: [
+      { id: 'hdr', type: 'heading', label: 'Steering' },
+      { id: 's_gear', label: 'Steering Gear (make / type)', type: 'text', full: true, hint: 'e.g. TRW TAS65, Sheppard M100; hydraulic / electro-hydraulic' },
+      { id: 's_play', label: 'Steering Wheel Free Play', type: 'text' },
+      { id: 's_wheel', label: 'Steering Wheel Position As Found', type: 'text' },
+      { id: 's_col', label: 'Column / Shaft / U-Joints', type: 'status', opts: STATUS_OPTS },
+      { id: 's_pitman', label: 'Pitman Arm', type: 'status', opts: STATUS_OPTS },
+      { id: 's_drag', label: 'Drag Link', type: 'status', opts: STATUS_OPTS },
+      { id: 's_tie', label: 'Tie Rod & Ends', type: 'lrsel', opts: STATUS_OPTS },
+      { id: 's_kp', label: 'Kingpins / Bushings', type: 'lrsel', opts: STATUS_OPTS },
+      { id: 's_arm', label: 'Steering Arms / Knuckles', type: 'lrsel', opts: STATUS_OPTS },
+      { id: 's_pump', label: 'Power Steering Pump / Hoses / Fluid Level', type: 'status', opts: STATUS_OPTS },
+      { id: 's_stops', label: 'Axle Stops / Turn Angle Evidence', type: 'text', full: true },
+      { id: 'f_hdr', type: 'heading', label: 'Front Suspension — Left / Right' },
+      { id: 'f_beam', label: 'Front Axle Beam', type: 'status', opts: STATUS_OPTS },
+      ...suspBlock([
+        ['f_stype', 'Spring Type', 'lrsel', ['Leaf', 'Air', 'Parabolic Taper Leaf']], ['f_spring', 'Spring Condition'], ['f_hanger', 'Hangers / Shackles / Pins'], ['f_ubolt', 'U-Bolts / Seats'],
+        ['f_shock', 'Shocks'], ['f_bag', 'Air Bags / Height Control Valve'], ['f_bearing', 'Wheel Bearings / Hub Play'], ['f_wss', 'Wheel Speed Sensors / Tone Rings'], ['f_marks', 'Marks in Wheel Well / Fender'],
+      ]),
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'hrsusp', profiles: HEAVY, title: 'Rear Suspension & Driveline', short: 'Rear Susp', fields: [
+      { id: 'type', label: 'Rear Suspension Type', type: 'select', opts: ['Air Ride', 'Leaf Spring', 'Walking Beam (Hendrickson)', 'Rubber Block', 'Other'], full: true },
+      { id: 'make', label: 'Suspension Make / Model', type: 'text', full: true },
+      { id: 'hdr', type: 'heading', label: 'Components — Left / Right' },
+      ...suspBlock([
+        ['bags', 'Air Bags'], ['hcv', 'Height Control / Leveling Valve'], ['spring', 'Springs / Beams'], ['hanger', 'Hangers / Shackles / Equalizer'], ['ubolt', 'U-Bolts / Seats'],
+        ['torque', 'Torque Rods / Radius Rods'], ['shock', 'Shocks'], ['housing', 'Axle Housing'], ['bearing', 'Wheel Bearings / Hub Play'], ['wss', 'Wheel Speed Sensors / Tone Rings'], ['marks', 'Marks in Wheel Well / Fender'],
+      ]),
+      { id: 'dl_hdr', type: 'heading', label: 'Driveline' },
+      { id: 'dl_shaft', label: 'Driveshaft(s)', type: 'status', opts: STATUS_OPTS },
+      { id: 'dl_uj', label: 'U-Joints / Carrier Bearing', type: 'status', opts: STATUS_OPTS },
+      { id: 'dl_diff', label: 'Differential(s) / Carrier / Inter-Axle Lock', type: 'status', opts: STATUS_OPTS },
+      { id: 'dl_ratio', label: 'Axle Ratio (tag)', type: 'text' },
+      { id: 'dl_leak', label: 'Leaks', type: 'text' },
+      { id: 'pbrake', label: 'Parking (Spring) Brakes As Found', type: 'select', opts: ['Applied', 'Released', 'Caged', 'Not Evaluated'], full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'hbrakes', profiles: HEAVY, title: 'Brake System', short: 'Brakes', fields: [
+      { id: 'sys', label: 'Brake System Type', type: 'select', opts: ['Air', 'Hydraulic', 'Air-over-Hydraulic', 'Electric (EV)'], full: true },
+      { id: 'abs_hdr', type: 'heading', label: 'ABS / Stability' },
+      { id: 'abs_make', label: 'ABS ECU (make / model / part no.)', type: 'text', full: true, hint: 'e.g. Bendix EC-80, WABCO/ZF E-version, Meritor WABCO' },
+      { id: 'abs_loc', label: 'ECU Location', type: 'text' },
+      { id: 'abs_lamp', label: 'ABS Lamp (key on)', type: 'select', opts: ['Bulb check then off', 'Stays on', 'No lamp', 'No power', 'Not Evaluated'] },
+      { id: 'tabs_lamp', label: 'Trailer ABS Lamp (dash)', type: 'select', opts: ['Bulb check then off', 'Stays on', 'No lamp', 'N/A', 'Not Evaluated'] },
+      { id: 'abs_cfg', label: 'ABS Configuration', type: 'select', opts: ['4S/4M', '6S/4M', '6S/6M', '2S/2M', 'Unknown'] },
+      { id: 'stab', label: 'Stability / Traction', type: 'multi', opts: ['ATC', 'RSC (roll only)', 'ESC / Full Stability', 'None', 'Unknown'], full: true },
+      { id: 'abs_mod', label: 'Modulator Valves / Wiring', type: 'status', opts: STATUS_OPTS },
+      { id: 'air_hdr', type: 'heading', label: 'Air System' },
+      { id: 'a_comp', label: 'Compressor / Drive', type: 'status', opts: STATUS_OPTS },
+      { id: 'a_dryer', label: 'Air Dryer / Purge', type: 'status', opts: STATUS_OPTS },
+      { id: 'a_gov', label: 'Governor Cut-In / Cut-Out (psi)', type: 'text', hint: 'e.g. 105 / 125' },
+      { id: 'a_build', label: 'Build Time (psi range / seconds)', type: 'text', hint: 'e.g. 85→100 psi in 45 s at fast idle' },
+      { id: 'a_leak', label: 'Leak-Down — Released / Applied (psi/min)', type: 'text', hint: 'engine off, 1 min each' },
+      { id: 'a_low', label: 'Low-Air Warning Activates (psi)', type: 'text' },
+      { id: 'a_spring', label: 'Spring Brakes Apply Automatically (psi)', type: 'text' },
+      { id: 'a_gauge', label: 'Primary / Secondary Gauge As Found (psi)', type: 'text' },
+      { id: 'a_tanks', label: 'Air Tanks / Drain Valves / Mounts', type: 'status', opts: STATUS_OPTS },
+      { id: 'a_lines', label: 'Air Lines / Hoses / Fittings', type: 'status', opts: STATUS_OPTS },
+      { id: 'a_valves', label: 'Foot Valve / Relay / Quick-Release Valves', type: 'status', opts: STATUS_OPTS },
+      { id: 'a_tpv', label: 'Tractor Protection Valve / Trailer Supply', type: 'status', opts: STATUS_OPTS },
+      { id: 'a_glad', label: 'Gladhands & Seals (service / supply)', type: 'text', full: true },
+      { id: 'a_hand', label: 'Trailer Hand Valve (trolley) As Found', type: 'text' },
+      { id: 'a_pedal', label: 'Brake Pedal / Treadle Condition & Position', type: 'text' },
+      { id: 'hyd_hdr', type: 'heading', label: 'Hydraulic System (if equipped)', na: true },
+      { id: 'h_mc', label: 'Master Cylinder / Fluid Level', type: 'status', opts: STATUS_OPTS },
+      { id: 'h_boost', label: 'Booster (vacuum / hydro-boost / electric)', type: 'text' },
+      { id: 'h_lines', label: 'Lines / Hoses', type: 'status', opts: STATUS_OPTS },
+      { id: 'h_pedal', label: 'Pedal Effort / Travel', type: 'status', opts: STATUS_OPTS },
+      ...axleBrakes('st', 'Steer Axle Brakes'),
+      ...axleBrakes('r1', 'Rear Axle 1 Brakes'),
+      ...axleBrakes('r2', 'Rear Axle 2 Brakes', { na: true }),
+      ...axleBrakes('lx', 'Lift / Tag Axle Brakes', { na: true }),
+      { id: 'balance', label: 'Brake Balance / Timing Observations', type: 'area', full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'coupling', profiles: ['tractor', 'straight'], title: 'Fifth Wheel & Coupling', short: 'Coupling', fields: [
+      { id: 'fw_hdr', type: 'heading', label: 'Fifth Wheel', na: true },
+      { id: 'fw_make', label: 'Make / Model', type: 'text', full: true, hint: 'e.g. Holland FW35, Jost JSK37, Fontaine 7000' },
+      { id: 'fw_type', label: 'Mount Type', type: 'select', opts: ['Fixed', 'Sliding (air)', 'Sliding (manual)'] },
+      { id: 'fw_pos', label: 'Slide Position / Setting As Found', type: 'text' },
+      { id: 'fw_height', label: 'Fifth Wheel Height (in)', type: 'text' },
+      { id: 'fw_jaw', label: 'Jaw / Lock Condition', type: 'status', opts: STATUS_OPTS },
+      { id: 'fw_release', label: 'Release Handle Position', type: 'select', opts: ['Locked', 'Released', 'Not Evaluated'] },
+      { id: 'fw_lock', label: 'Slide Lock Pins Engaged', type: 'select', opts: ['Yes', 'No', 'N/A', 'Not Evaluated'] },
+      { id: 'fw_mount', label: 'Mounting Bolts / Brackets / Frame', type: 'status', opts: STATUS_OPTS },
+      { id: 'fw_plate', label: 'Top Plate Wear / Lube / Witness Marks', type: 'text', full: true },
+      { id: 'fw_kp', label: 'Kingpin Engagement Evidence (drop / pull-out)', type: 'area', full: true },
+      { id: 'hitch_hdr', type: 'heading', label: 'Pintle Hook / Receiver / Other Hitch', na: true },
+      { id: 'h_type', label: 'Hitch Type', type: 'text' },
+      { id: 'h_rating', label: 'Rating (label)', type: 'text' },
+      { id: 'h_cond', label: 'Condition / Safety Chains', type: 'status', opts: STATUS_OPTS },
+      { id: 'conn_hdr', type: 'heading', label: 'Trailer Connections' },
+      { id: 'c_elec', label: 'Electrical Pigtail (7-way) Condition', type: 'status', opts: STATUS_OPTS },
+      { id: 'c_abs', label: 'Trailer ABS Power (pin 7) / PLC', type: 'text' },
+      { id: 'c_glad', label: 'Air Lines / Gladhands As Found', type: 'text', full: true },
+      { id: 'c_state', label: 'Trailer Coupled As Found', type: 'select', opts: ['Yes', 'No', 'Separated in crash', 'Unknown'] },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'hinterior', profiles: HEAVY, title: 'Cab Interior & Glass', short: 'Interior', fields: [
+      { id: 'g_hdr', type: 'heading', label: 'Glass & Mirrors' },
+      { id: 'g_ws', label: 'Windshield', type: 'status', opts: ['Intact', 'Broken Out', 'Cracked', 'Replaced'] },
+      { id: 'g_drv', label: 'Driver Door Glass', type: 'status', opts: INTACT },
+      { id: 'g_pass', label: 'Passenger Door Glass', type: 'status', opts: INTACT },
+      { id: 'g_other', label: 'Other Glass (sleeper, rear, vent)', type: 'text', full: true },
+      { id: 'g_mirrors', label: 'Mirrors — position / damage', type: 'text', full: true },
+      { id: 'g_frag', label: 'Fragment Locations', type: 'area', full: true },
+      { id: 'c_hdr', type: 'heading', label: 'Cab' },
+      { id: 'c_ip', label: 'Instrument Panel / Dash', type: 'status', opts: STATUS_OPTS },
+      { id: 'c_sw', label: 'Steering Wheel', type: 'status', opts: STATUS_OPTS },
+      { id: 'c_col', label: 'Steering Column / Tilt-Telescope Position', type: 'text' },
+      { id: 'c_pedals', label: 'Pedals (position / marks / floor mat)', type: 'text', full: true },
+      { id: 'c_shift', label: 'Shifter / Gear Selector As Found', type: 'text' },
+      { id: 'c_pb', label: 'Parking Brake Knobs As Found (yellow / red)', type: 'text' },
+      { id: 'c_switches', label: 'Switch Positions As Found', type: 'area', full: true, hint: 'headlamps, hazards, engine brake, cruise, retarder, ATC off, diff lock, inter-axle lock' },
+      { id: 'c_gauges', label: 'Gauges / Cluster As Found', type: 'text', full: true },
+      { id: 'c_lamps', label: 'Warning Lamps (key on)', type: 'text', full: true },
+      { id: 'c_doors', label: 'Door Panels / Latches', type: 'status', opts: STATUS_OPTS },
+      { id: 'c_pillars', label: 'Pillars / Headliner / Roof', type: 'status', opts: STATUS_OPTS },
+      { id: 'c_contact', label: 'Occupant Contact Marks', type: 'area', full: true },
+      { id: 'c_intrusion', label: 'Cab Intrusion / Deformation', type: 'area', full: true },
+      { id: 's_hdr', type: 'heading', label: 'Seats' },
+      { id: 's_type', label: 'Seat Type / Make', type: 'lr', cols: ['Driver', 'Passenger'], full: true, hint: 'air ride, mechanical, integrated belt, Bostrom / Seats Inc / National' },
+      { id: 's_pos', label: 'Seat Position (fore-aft / height / air)', type: 'lr', cols: ['Driver', 'Passenger'], full: true },
+      { id: 's_back', label: 'Seatback (angle / condition)', type: 'lr', cols: ['Driver', 'Passenger'], full: true },
+      { id: 's_head', label: 'Headrest', type: 'lr', cols: ['Driver', 'Passenger'], full: true },
+      { id: 's_anchor', label: 'Seat Base / Anchorage / Track', type: 'lr', cols: ['Driver', 'Passenger'], full: true },
+      { id: 'sl_hdr', type: 'heading', label: 'Sleeper', na: true },
+      { id: 'sl_bunk', label: 'Bunk / Mattress / Occupied Evidence', type: 'text', full: true },
+      { id: 'sl_restraint', label: 'Bunk Restraint (net / belts)', type: 'status', opts: ['Present — stowed', 'Present — in use', 'Missing', 'Not Evaluated'] },
+      { id: 'sl_curtain', label: 'Curtain / Cabinets / Loose Items', type: 'text', full: true },
+      { id: 'i_hdr', type: 'heading', label: 'Items in Cab' },
+      { id: 'i_devices', label: 'Devices Present', type: 'multi', opts: ['ELD Tablet', 'Cell Phone', 'Dashcam', 'GPS Unit', 'CB Radio', 'Fleet Camera', 'Laptop', 'None'], full: true },
+      { id: 'i_docs', label: 'Documents (logs, BOL, permits, DVIR)', type: 'area', full: true },
+      { id: 'i_safety', label: 'Fire Extinguisher / Triangles / Spare Fuses', type: 'text', full: true },
+      { id: 'i_loose', label: 'Loose Items / Debris', type: 'area', full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'hbelts', profiles: HEAVY, title: 'Seatbelts', short: 'Seatbelts', fields: [
+      ...beltBlock('d', 'Driver', { pt: true }),
+      { id: 'd_komfort', label: 'Driver Comfort Latch / Tension Reliever', type: 'select', opts: ['None', 'Present — engaged', 'Present — disengaged', 'Not Evaluated'] },
+      { id: 'd_integ', label: 'Driver Belt Integrated in Seat', type: 'yn' },
+      ...beltBlock('p', 'Passenger', { pt: true }),
+      ...beltBlock('c', 'Center / Jump Seat', { center: true }),
+      { id: 'child', label: 'Child Restraints / Other Occupant Restraints', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'hsrs', profiles: HEAVY, title: 'SRS / Airbags', short: 'SRS', fields: [
+      { id: 'lamp', label: 'SRS Warning Lamp (key on)', type: 'select', opts: ['Off (normal)', 'On', 'Flashing', 'No Power', 'Not Equipped', 'Not Evaluated'] },
+      { id: 'sysdesc', label: 'System Description', type: 'area', full: true, hint: 'e.g. driver frontal only; RollTek side / seat-mounted; IMMI; supplier' },
+      ...airbagBlock('df', 'Driver Frontal Airbag'),
+      ...airbagBlock('pf', 'Passenger Frontal Airbag'),
+      ...airbagBlock('ds', 'Driver Side / Seat-Mounted Airbag'),
+      ...airbagBlock('ps', 'Passenger Side / Seat-Mounted Airbag'),
+      ...airbagBlock('lc', 'Left Curtain / Rollover Airbag'),
+      ...airbagBlock('rc', 'Right Curtain / Rollover Airbag'),
+      { id: 'acu_hdr', type: 'heading', label: 'Airbag Control Unit / Rollover Sensor' },
+      { id: 'acu_loc', label: 'Location', type: 'text' },
+      { id: 'acu_pn', label: 'Part Number', type: 'text' },
+      { id: 'acu_mount', label: 'Mounting / Bracket Condition', type: 'status', opts: STATUS_OPTS },
+      { id: 'acu_conn', label: 'Connector Condition', type: 'status', opts: STATUS_OPTS },
+      { id: 'acu_power', label: 'Power / Ground at Connector', type: 'select', opts: ['Verified', 'Not Verified', 'No Power'] },
+      { id: 'acu_notes', label: 'Notes', type: 'area', full: true },
+      { id: 'cs_hdr', type: 'heading', label: 'Crash / Satellite Sensors' },
+      { id: 'cs_list', label: 'Sensors', type: 'table', full: true, columns: [{ id: 'type', label: 'Type' }, { id: 'loc', label: 'Location' }, { id: 'cond', label: 'Condition / Notes' }] },
+    ]
+  },
+  {
+    id: 'hadas', profiles: HEAVY, title: 'ADAS / Safety Systems', short: 'ADAS', fields: [
+      { id: 'suite', label: 'System Suite (per build / labels / dash)', type: 'text', full: true, hint: 'e.g. Bendix Wingman Fusion / Advanced, Detroit Assurance 5.0, WABCO OnGuardACTIVE / OnLaneASSIST, Volvo Active Driver Assist, Mack Road Stability Advantage' },
+      { id: 'eq', label: 'Functions Equipped', type: 'multi', full: true, opts: ['FCW', 'AEB / Collision Mitigation', 'ACC', 'Stationary Object Alert', 'LDW', 'Lane Keeping Assist', 'Side Object Detection', 'Blind Spot Warning', 'ESC / Full Stability', 'RSC (roll only)', 'ATC', 'Speed Limiter', 'Driver Alert / Fatigue', 'Auto High Beam', 'Traffic Sign Recognition', 'Rear Camera', 'Surround View', 'Park Sensors', 'None'] },
+      { id: 'src', label: 'Equipment Verified Via', type: 'multi', opts: ['Build Sheet / Data Book', 'Labels', 'Dash Display', 'Scan Tool', 'Visual', 'Carrier Records'], full: true },
+      { id: 'lamp', label: 'ADAS Warning / Fault Lamps (key on)', type: 'area', full: true },
+      { id: 'fr_hdr', type: 'heading', label: 'Front Radar', na: true },
+      { id: 'fr_loc', label: 'Location (bumper / grille)', type: 'text' },
+      { id: 'fr_pn', label: 'Make / Part Number', type: 'text' },
+      { id: 'fr_mount', label: 'Mounting / Bracket', type: 'status', opts: ['Unremarkable', 'Displaced', 'Damaged', 'Missing', 'Not Evaluated'] },
+      { id: 'fr_cover', label: 'Bumper / Cover Condition', type: 'status', opts: STATUS_OPTS },
+      { id: 'fr_aim', label: 'Aim / Alignment Evidence', type: 'text', full: true },
+      { id: 'fc_hdr', type: 'heading', label: 'Forward Camera', na: true },
+      { id: 'fc_loc', label: 'Location / Bracket', type: 'text' },
+      { id: 'fc_pn', label: 'Make / Part Number', type: 'text' },
+      { id: 'fc_ws', label: 'Windshield Replaced / Aftermarket Glass', type: 'select', opts: ['No Evidence', 'Yes', 'Unknown'] },
+      { id: 'fc_obstruct', label: 'Lens Obstruction / Damage', type: 'status', opts: STATUS_OPTS },
+      { id: 'fc_cal', label: 'Calibration Evidence', type: 'text', full: true },
+      { id: 'sr_hdr', type: 'heading', label: 'Side Radars / Other Sensors', na: true },
+      { id: 'sr_list', label: 'Sensor Inventory', type: 'table', full: true, columns: [{ id: 'sensor', label: 'Sensor' }, { id: 'loc', label: 'Location' }, { id: 'cond', label: 'Condition' }, { id: 'pn', label: 'Part No.' }] },
+      { id: 'cam_hdr', type: 'heading', label: 'Video / Camera Systems', na: true },
+      { id: 'cam_sys', label: 'Fleet Camera System', type: 'multi', opts: ['Lytx', 'Samsara', 'Motive', 'Netradyne', 'SmartDrive', 'Omnitracs', 'OEM Camera', 'Consumer Dashcam', 'None'], full: true },
+      { id: 'cam_facing', label: 'Camera Views', type: 'multi', opts: ['Forward', 'Driver-Facing', 'Side', 'Rear', 'Cargo'], full: true },
+      { id: 'cam_loc', label: 'Camera Unit Location / Serial', type: 'text', full: true },
+      { id: 'set_hdr', type: 'heading', label: 'Settings As Found' },
+      { id: 'set_state', label: 'System On/Off States', type: 'area', full: true },
+      { id: 'set_follow', label: 'ACC Following Distance Setting', type: 'text' },
+      { id: 'set_fcw', label: 'FCW / Alert Sensitivity', type: 'text' },
+      { id: 'set_limit', label: 'Road Speed Limiter Setting (mph)', type: 'text' },
+      { id: 'set_src', label: 'Settings Read From', type: 'select', opts: ['Dash Display', 'Scan Tool', 'Carrier Records', 'Not Accessible'] },
+      { id: 'notes', label: 'ADAS Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'hdiag', profiles: HEAVY, title: 'Diagnostics & Electrical', short: 'Diagnostics', fields: [
+      { id: 'tool', label: 'Scan Tool / Software Version', type: 'text', full: true, hint: 'JPRO, Cummins INSITE, DDDL / DiagnosticLink, PACCAR Davie, Volvo/Mack PTT, Navistar ServiceMaxx, TEXA, Bendix ACom, WABCO Toolbox' },
+      { id: 'adapter', label: 'Adapter (RP1210 / J2534)', type: 'text' },
+      { id: 'port', label: 'Diagnostic Port', type: 'select', opts: ['9-pin Deutsch (J1939 250k)', '9-pin Green (J1939 500k)', '6-pin', 'OBD-II 16-pin', 'Direct-to-Module'] },
+      { id: 'power', label: 'Vehicle Power For Scan', type: 'select', opts: ['Vehicle Batteries', 'External Supply', 'Direct-to-Module', 'No Power Available'] },
+      { id: 'batt', label: 'Battery Voltage at Scan (V)', type: 'num' },
+      { id: 'disconnect', label: 'Battery Disconnect Switch As Found', type: 'select', opts: ['On', 'Off', 'None', 'Unknown'] },
+      { id: 'modules', label: 'Modules Responding (engine, TCM, ABS, body, ADAS, cluster)', type: 'area', full: true },
+      { id: 'dtc', label: 'Fault Codes', type: 'table', full: true, columns: [{ id: 'mod', label: 'Module' }, { id: 'spn', label: 'SPN / FMI or Code' }, { id: 'desc', label: 'Description' }, { id: 'stat', label: 'Status / Count / Time' }] },
+      { id: 'net', label: 'J1939 / J1708 Network Status', type: 'area', full: true },
+      { id: 'lamps', label: 'MIL / Stop / Check Engine / Other Lamps', type: 'text', full: true },
+      { id: 'fuses', label: 'Fuses / Relays / Breakers Checked', type: 'area', full: true },
+      { id: 'files', label: 'Scan Report File Names', type: 'area', full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'hedr', profiles: HEAVY, title: 'ECM / Event Data', short: 'ECM Data', fields: [
+      { id: 'ecm_hdr', type: 'heading', label: 'Engine ECM' },
+      { id: 'ecm_make', label: 'ECM Make / Model', type: 'text', full: true, hint: 'e.g. Cummins CM2350, Detroit DDEC / MCM-CPC, PACCAR MX, Volvo EMS, Navistar' },
+      { id: 'ecm_sn', label: 'ECM Serial / Part No.', type: 'text' },
+      { id: 'ecm_sw', label: 'Software / Calibration ID', type: 'text' },
+      { id: 'ecm_status', label: 'ECM Download', type: 'select', full: true, opts: ['Not Supported', 'Previously Imaged', 'Imaged at Inspection — Diagnostic Port', 'Imaged at Inspection — Bench / Direct', 'Not Imaged (module retained for later)', 'Not Imaged'] },
+      { id: 'ecm_tool', label: 'Download Tool / Software Version', type: 'text', full: true },
+      { id: 'ecm_by', label: 'Imaged By', type: 'text' },
+      { id: 'ecm_date', label: 'Download Date', type: 'date' },
+      { id: 'ecm_data', label: 'Data Present', type: 'multi', full: true, opts: ['Hard Brake / Sudden Decel Events', 'Last Stop Record', 'Fault Code Snapshots', 'Trip / Daily Engine Usage', 'Vehicle Speed / RPM Histograms', 'Cruise / Engine Brake Usage', 'Speed Limiter Parameters', 'None Retrieved'] },
+      { id: 'ecm_events', label: 'Events Recorded (count / type / timestamps)', type: 'area', full: true },
+      { id: 'ecm_clock', label: 'ECM Clock vs. Actual (offset)', type: 'text', full: true },
+      { id: 'ecm_hours', label: 'Engine Hours / Odometer at Download', type: 'text' },
+      { id: 'ecm_files', label: 'Report / Data File Names', type: 'area', full: true },
+      { id: 'abs_hdr', type: 'heading', label: 'ABS / Stability ECU Data', na: true },
+      { id: 'abs_tool', label: 'Tool (Bendix ACom, WABCO Toolbox, other)', type: 'text', full: true },
+      { id: 'abs_data', label: 'Data Retrieved', type: 'multi', full: true, opts: ['Event Log', 'Fault History', 'Stability Event Records', 'Configuration', 'None'] },
+      { id: 'abs_notes', label: 'Notes', type: 'area', full: true },
+      { id: 'acm_hdr', type: 'heading', label: 'Airbag Control Module Data', na: true },
+      { id: 'acm_status', label: 'ACM Download', type: 'select', full: true, opts: ['Not Equipped', 'Not Supported', 'Imaged at Inspection', 'Module Retained for Later', 'Not Imaged'] },
+      { id: 'acm_notes', label: 'Notes', type: 'area', full: true },
+      { id: 'tel_hdr', type: 'heading', label: 'Telematics / ELD / Video' },
+      { id: 'tel_prov', label: 'Telematics / ELD Provider', type: 'multi', full: true, opts: ['Samsara', 'Motive (KeepTruckin)', 'Omnitracs', 'PeopleNet / Trimble', 'Geotab', 'Lytx', 'Netradyne', 'Verizon Connect', 'OEM (Detroit Connect, Volvo, PACCAR)', 'Other', 'None'] },
+      { id: 'tel_unit', label: 'Unit Location / Serial', type: 'text', full: true },
+      { id: 'tel_data', label: 'Data Requested / Obtained', type: 'area', full: true, hint: 'GPS breadcrumbs, HOS logs, event video, DVIR, speed history' },
+      { id: 'chain', label: 'Chain of Custody / Modules Retained By', type: 'text', full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'busbody', profiles: ['bus'], title: 'Passenger Compartment', short: 'Passengers', fields: [
+      { id: 'layout', label: 'Seating Layout (rows × seats / capacity)', type: 'text', full: true },
+      { id: 'seattype', label: 'Passenger Seat Type', type: 'multi', opts: ['Compartmentalized (school bus)', 'High-Back Coach', 'Transit Bench', 'Flip / Fold', 'Wheelchair Position'], full: true },
+      { id: 'belts', label: 'Passenger Belts', type: 'select', opts: ['None', 'Lap Only', 'Lap-Shoulder (3-pt)', 'Mixed'] },
+      { id: 'beltcond', label: 'Belt Condition / Usage Evidence', type: 'area', full: true, hint: 'load marks, cut webbing, buckled as found — note seat number' },
+      { id: 'anchor', label: 'Seat Anchorages / Frames', type: 'status', opts: STATUS_OPTS },
+      { id: 'seatdmg', label: 'Seat Deformation by Position', type: 'table', full: true, columns: [{ id: 'seat', label: 'Seat / Row' }, { id: 'dmg', label: 'Damage / Deformation' }, { id: 'contact', label: 'Occupant Contact Evidence' }] },
+      { id: 'exits', label: 'Emergency Exits (count / type / function / labels)', type: 'area', full: true },
+      { id: 'windows', label: 'Windows (push-out, glazing type, breakage)', type: 'area', full: true },
+      { id: 'hatch', label: 'Roof Hatches', type: 'status', opts: STATUS_OPTS },
+      { id: 'door', label: 'Entry Door(s) / Stepwell', type: 'status', opts: STATUS_OPTS },
+      { id: 'barrier', label: 'Driver Barrier / Modesty Panels', type: 'status', opts: STATUS_OPTS },
+      { id: 'stanchion', label: 'Stanchions / Grab Rails / Luggage Racks', type: 'status', opts: STATUS_OPTS },
+      { id: 'lift', label: 'Wheelchair Lift / Securement', type: 'status', opts: ['Unremarkable', 'Comment', 'Not Equipped', 'Not Evaluated'] },
+      { id: 'roof', label: 'Roof / Sidewall Intrusion / Rollover Damage', type: 'area', full: true },
+      { id: 'floor', label: 'Floor / Underbody', type: 'status', opts: STATUS_OPTS },
+      { id: 'contact', label: 'Interior Contact Marks (map by seat)', type: 'area', full: true },
+      { id: 'sb_hdr', type: 'heading', label: 'School Bus Equipment', na: true },
+      { id: 'sb_stop', label: 'Stop Arm / Crossing Gate', type: 'status', opts: STATUS_OPTS },
+      { id: 'sb_lamps', label: 'Warning Lamp System (8-lamp)', type: 'status', opts: STATUS_OPTS },
+      { id: 'sb_mirror', label: 'Cross-View Mirrors', type: 'status', opts: STATUS_OPTS },
+      { id: 'sb_cam', label: 'Interior / Stop-Arm Cameras', type: 'text', full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  /* ===================== TRAILER ===================== */
+  {
+    id: 'texterior', profiles: ['trailer'], title: 'Exterior & Damage', short: 'Exterior', fields: [
+      { id: 'walk', label: 'Walk-Around Overview', type: 'area', full: true, hint: 'Overall damage, PDOF, principal contact area' },
+      { id: 'front', label: 'Front / Nose / Upper Coupler Area', type: 'area', full: true },
+      { id: 'left', label: 'Left Side', type: 'area', full: true },
+      { id: 'right', label: 'Right Side', type: 'area', full: true },
+      { id: 'rear', label: 'Rear / Doors (position as found)', type: 'area', full: true },
+      { id: 'roof', label: 'Roof', type: 'area', full: true },
+      { id: 'floor', label: 'Floor / Deck / Interior Walls', type: 'area', full: true },
+      { id: 'under', label: 'Undercarriage / Crossmembers', type: 'area', full: true },
+      { id: 'transfer', label: 'Paint / Material Transfer', type: 'area', full: true },
+      { id: 'crush', label: 'Crush / Deformation Measurements Taken', type: 'select', opts: ['Yes', 'No', 'Via 3D Scan'] },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'tstruct', profiles: ['trailer'], title: 'Coupler, Landing Gear & Underride', short: 'Structure', fields: [
+      { id: 'kp_hdr', type: 'heading', label: 'Kingpin / Upper Coupler' },
+      { id: 'kp_size', label: 'Kingpin Size', type: 'select', opts: ['2"', '3.5"', 'Other'] },
+      { id: 'kp_cond', label: 'Kingpin Condition / Wear', type: 'status', opts: STATUS_OPTS },
+      { id: 'kp_plate', label: 'Upper Coupler Plate / Bolster', type: 'status', opts: STATUS_OPTS },
+      { id: 'kp_marks', label: 'Witness Marks / Lube Pattern / Pull-Out Evidence', type: 'area', full: true },
+      { id: 'kp_height', label: 'Coupler Height As Found (in)', type: 'text' },
+      { id: 'lg_hdr', type: 'heading', label: 'Landing Gear' },
+      { id: 'lg_cond', label: 'Legs / Braces / Mounting', type: 'status', opts: STATUS_OPTS },
+      { id: 'lg_pos', label: 'Position As Found', type: 'select', opts: ['Raised', 'Lowered', 'Partially Lowered', 'Damaged'] },
+      { id: 'lg_crank', label: 'Crank / Gear Selection', type: 'text' },
+      { id: 'sl_hdr', type: 'heading', label: 'Sliding Tandem', na: true },
+      { id: 'sl_pos', label: 'Slider Position (hole / from rear)', type: 'text' },
+      { id: 'sl_pins', label: 'Lock Pins Engaged', type: 'select', opts: ['All', 'Partial', 'None', 'Not Evaluated'] },
+      { id: 'sl_cond', label: 'Slider Rails / Stops', type: 'status', opts: STATUS_OPTS },
+      { id: 'rig_hdr', type: 'heading', label: 'Rear Impact Guard (FMVSS 223/224)' },
+      { id: 'rig_label', label: 'Certification Label Present', type: 'select', opts: ['Yes', 'No', 'Illegible', 'Not Evaluated'] },
+      { id: 'rig_mfr', label: 'Guard Manufacturer / Model', type: 'text' },
+      { id: 'rig_height', label: 'Height — Ground to Bottom of Horizontal Member (in)', type: 'text' },
+      { id: 'rig_setback', label: 'Setback from Rear Extremity (in)', type: 'text' },
+      { id: 'rig_width', label: 'Width vs. Trailer / Inset Each Side (in)', type: 'text' },
+      { id: 'rig_cond', label: 'Condition / Deformation', type: 'area', full: true },
+      { id: 'rig_prior', label: 'Prior Damage / Repairs / Welds', type: 'text', full: true },
+      { id: 'sug_hdr', type: 'heading', label: 'Side Underride Guards / Skirts', na: true },
+      { id: 'sug_type', label: 'Type', type: 'select', opts: ['Aerodynamic Skirt', 'Side Guard', 'None'] },
+      { id: 'sug_cond', label: 'Condition', type: 'area', full: true },
+      { id: 'fr_hdr', type: 'heading', label: 'Frame & Body Structure' },
+      { id: 'fr_rails', label: 'Main Rails / Crossmembers', type: 'status', opts: STATUS_OPTS },
+      { id: 'fr_walls', label: 'Sidewalls / Posts / Roof Bows', type: 'status', opts: STATUS_OPTS },
+      { id: 'fr_doors', label: 'Rear Doors / Hinges / Locks', type: 'status', opts: STATUS_OPTS },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'ttires', profiles: ['trailer'], title: 'Axles, Wheels & Tires', short: 'Tires', fields: [
+      { id: 'summary', label: 'Axle / Tire Summary', type: 'area', full: true, hint: 'axle count & spread, matching duals, mixed brands/sizes, retreads' },
+      ...axleTires('a1', 'Axle 1 (Forward)', DUAL),
+      ...axleTires('a2', 'Axle 2', DUAL, { na: true }),
+      ...axleTires('a3', 'Axle 3', DUAL, { na: true }),
+      { id: 'spare', label: 'Spare Tire / Carrier', type: 'text', full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'tsusp', profiles: ['trailer'], title: 'Suspension', short: 'Suspension', fields: [
+      { id: 'type', label: 'Suspension Type', type: 'select', opts: ['Air Ride', 'Leaf Spring', 'Spring — Slipper', 'Rubber', 'Other'], full: true },
+      { id: 'make', label: 'Suspension Make / Model', type: 'text', full: true },
+      { id: 'hdr', type: 'heading', label: 'Components — Left / Right' },
+      ...suspBlock([
+        ['bags', 'Air Bags'], ['hcv', 'Height Control Valve / Dump Valve'], ['spring', 'Springs / Trailing Arms'], ['hanger', 'Hangers / Equalizers'], ['ubolt', 'U-Bolts / Seats'],
+        ['torque', 'Torque Rods / Pivot Bushings'], ['shock', 'Shocks'], ['housing', 'Axle Beams / Alignment'], ['bearing', 'Wheel Bearings / Hub Play'], ['wss', 'Wheel Speed Sensors / Tone Rings'], ['marks', 'Marks in Wheel Well / Skirt'],
+      ]),
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'tbrakes', profiles: ['trailer'], title: 'Brake System', short: 'Brakes', fields: [
+      { id: 'sys', label: 'Brake System Type', type: 'select', opts: ['Air', 'Electric', 'Surge / Hydraulic'], full: true },
+      { id: 'abs_hdr', type: 'heading', label: 'Trailer ABS' },
+      { id: 'abs_make', label: 'ABS ECU (make / model / part no.)', type: 'text', full: true, hint: 'e.g. Bendix TABS-6, WABCO Easy-Stop / iABS, Haldex' },
+      { id: 'abs_loc', label: 'ECU / Modulator Location', type: 'text' },
+      { id: 'abs_cfg', label: 'Configuration', type: 'select', opts: ['2S/1M', '2S/2M', '4S/2M', '4S/3M', 'Unknown'] },
+      { id: 'abs_lamp', label: 'Trailer ABS Lamp (on trailer)', type: 'select', opts: ['Bulb check then off', 'Stays on', 'No lamp', 'Missing', 'Not Evaluated'] },
+      { id: 'abs_pwr', label: 'ABS Power (7-way pin 7 / PLC)', type: 'text' },
+      { id: 'abs_data', label: 'ECU Data Downloaded', type: 'select', opts: ['Yes', 'No', 'Not Supported', 'Retained for Later'] },
+      { id: 'abs_tool', label: 'Tool / Files', type: 'text', full: true },
+      { id: 'air_hdr', type: 'heading', label: 'Air System' },
+      { id: 'a_glad', label: 'Gladhands & Seals (service / supply)', type: 'text', full: true },
+      { id: 'a_tanks', label: 'Air Tanks / Drain Valves / Mounts', type: 'status', opts: STATUS_OPTS },
+      { id: 'a_lines', label: 'Air Lines / Hoses / Fittings', type: 'status', opts: STATUS_OPTS },
+      { id: 'a_valves', label: 'Relay / Spring Brake / Quick-Release Valves', type: 'status', opts: STATUS_OPTS },
+      { id: 'a_leak', label: 'Leak-Down — Released / Applied (psi/min)', type: 'text' },
+      { id: 'a_spring', label: 'Spring Brakes As Found', type: 'select', opts: ['Applied', 'Released', 'Caged', 'Not Evaluated'] },
+      ...axleBrakes('a1', 'Axle 1 Brakes'),
+      ...axleBrakes('a2', 'Axle 2 Brakes', { na: true }),
+      ...axleBrakes('a3', 'Axle 3 Brakes', { na: true }),
+      { id: 'balance', label: 'Brake Balance / Timing Observations', type: 'area', full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  {
+    id: 'tdata', profiles: ['trailer'], title: 'Electrical & Data', short: 'Data', fields: [
+      { id: 'pigtail', label: '7-Way Receptacle / Wiring Condition', type: 'status', opts: STATUS_OPTS },
+      { id: 'tel', label: 'Telematics / Tracking Unit', type: 'multi', opts: ['SkyBitz', 'Phillips Connect', 'Samsara', 'Spireon', 'ORBCOMM', 'Reefer Telematics', 'Other', 'None'], full: true },
+      { id: 'tel_loc', label: 'Unit Location / Serial', type: 'text', full: true },
+      { id: 'tel_data', label: 'Data Requested / Obtained', type: 'area', full: true, hint: 'GPS history, door events, reefer logs, tire pressure' },
+      { id: 'tpms', label: 'TPMS / Auto-Inflation System', type: 'text', full: true },
+      { id: 'cam', label: 'Cargo / Rear Camera', type: 'text', full: true },
+      { id: 'chain', label: 'Chain of Custody / Modules Retained By', type: 'text', full: true },
+      { id: 'notes', label: 'Notes', type: 'area', full: true },
+    ]
+  },
+  /* ===================== SHARED ===================== */
+  {
+    id: 'lighting', profiles: ALL_HEAVY, title: 'Lighting & Conspicuity', short: 'Lighting', fields: [
+      { id: 'head', label: 'Headlamps (low / high, type)', type: 'lrsel', opts: ['Intact', 'Damaged', 'Missing', 'Not Evaluated'] },
+      { id: 'headsw', label: 'Headlamp Switch As Found', type: 'select', opts: ['Off', 'Park', 'On', 'Auto', 'Unknown'] },
+      { id: 'filament', label: 'Filament / LED Examination (hot shock, stretch)', type: 'area', full: true },
+      { id: 'turn_f', label: 'Front Turn / Marker', type: 'lrsel', opts: ['Intact', 'Damaged', 'Missing', 'Not Evaluated'] },
+      { id: 'turn_r', label: 'Rear Turn / Stop / Tail', type: 'lrsel', opts: ['Intact', 'Damaged', 'Missing', 'Not Evaluated'] },
+      { id: 'clear', label: 'Clearance / ID / Side Marker Lamps', type: 'area', full: true },
+      { id: 'reflex', label: 'Reflex Reflectors', type: 'status', opts: STATUS_OPTS },
+      { id: 'tape', label: 'Conspicuity Tape (FMVSS 108 / 49 CFR 393.11)', type: 'status', opts: ['Present — good', 'Present — degraded / obscured', 'Partial / missing', 'Not Required', 'Not Evaluated'] },
+      { id: 'tape_desc', label: 'Tape Pattern / Coverage / Condition', type: 'area', full: true, hint: 'red/white alternating on sides & rear, white on rear guard, upper rear corners' },
+      { id: 'work', label: 'Work / Backup / Strobe Lamps', type: 'text', full: true },
+      { id: 'hazard', label: 'Hazard Switch As Found', type: 'select', opts: ['Off', 'On', 'Unknown'] },
       { id: 'notes', label: 'Notes', type: 'area', full: true },
     ]
   },
@@ -1063,27 +1668,6 @@ const DB = (() => {
 
 /* Photo bytes are stored as ArrayBuffers (Safari cannot reliably read Blobs back out of IndexedDB).
    In memory each photo carries rep/orig as Blobs; toRecord() strips them before writing. */
-async function blobToBuf(b) { try { return await new Response(b).arrayBuffer(); } catch (e) { return null; } }
-function dataUrlToBuf(u) { const bin = atob(u.split(',')[1]); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a.buffer; }
-function toRecord(p) { const { rep, orig, ...rest } = p; return rest; }
-async function hydratePhotos(list) {
-  const out = [];
-  for (const p of list) {
-    let dirty = false;
-    if (!p.repBuf) { // legacy record with Blob fields — migrate, fall back to thumbnail if the Blob is unreadable
-      let rb = p.rep && p.rep.size ? await blobToBuf(p.rep) : null; if (!rb || !rb.byteLength) rb = dataUrlToBuf(p.thumb);
-      let ob = p.orig && p.orig.size ? await blobToBuf(p.orig) : null; if (!ob || !ob.byteLength) ob = rb;
-      p.repBuf = rb; p.origBuf = ob; p.origType = p.type || 'image/jpeg'; delete p.rep; delete p.orig; dirty = true;
-    }
-    p.rep = new Blob([p.repBuf], { type: 'image/jpeg' }); p.orig = new Blob([p.origBuf], { type: p.origType || 'image/jpeg' });
-    if (dirty) { try { await DB.put('photos', toRecord(p)); } catch (e) { } }
-    out.push(p);
-  }
-  return out;
-}
-
-/* Photo bytes are stored as ArrayBuffers (Safari cannot reliably read Blobs back out of IndexedDB).
-   In memory each photo carries rep/orig as Blobs; toRecord() strips them before writing. */
 async function blobToBuf(b) { try { const a = await new Response(b).arrayBuffer(); return a && a.byteLength ? a : null; } catch (e) { return null; } }
 function dataUrlToBuf(u) { const bin = atob(u.split(',')[1]); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a.buffer; }
 function toRecord(p) { const { rep, orig, ...rest } = p; return rest; }
@@ -1103,7 +1687,9 @@ async function hydratePhotos(list) {
   return out.sort((a, b) => a.num - b.num);
 }
 function migrateInsp(i) {
-  if (!i) return i; // 'OK' status option renamed to 'Unremarkable'
+  if (!i) return i;
+  if (!i.profile) i.profile = 'pass'; // inspections created before vehicle types existed
+  // 'OK' status option renamed to 'Unremarkable'
   for (const sid in i.data) { const d = i.data[sid]; for (const k in d) { const v = d[k]; if (v && typeof v === 'object' && !Array.isArray(v)) { for (const kk of ['s', 'l', 'r']) if (v[kk] === 'OK') v[kk] = 'Unremarkable'; } } }
   return i;
 }
@@ -1117,8 +1703,9 @@ const today = () => new Date().toISOString().slice(0, 10);
 let toastT; function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 1800); }
 const CAM_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
 
-function blankInsp() {
-  return { id: uid(), created: new Date().toISOString(), updated: new Date().toISOString(), enabled: SCHEMA.map(s => s.id), na: {}, data: {}, photoSeq: 0 };
+function blankInsp(profile) {
+  profile = profile || 'pass';
+  return { id: uid(), profile, created: new Date().toISOString(), updated: new Date().toISOString(), enabled: sectionsFor(profile).map(s => s.id), na: {}, data: {}, photoSeq: 0 };
 }
 const secById = id => SCHEMA.find(s => s.id === id);
 const fieldOf = (sec, fid) => sec.fields.find(f => f.id === fid);
@@ -1142,7 +1729,7 @@ function sectionProgress(insp, sec) {
 function headingFor(sec, f) { // id of nearest preceding heading (for N/A grouping)
   let h = ''; for (const x of sec.fields) { if (x.type === 'heading') h = x.id; if (x === f) return h; } return h;
 }
-function inspTitle(i) { const c = (i.data.case || {}); const v = (i.data.vehicle || {}); const veh = [v.year, v.make, v.model].filter(Boolean).join(' '); return (c.case || 'Untitled inspection') + (veh ? ' — ' + veh : ''); }
+function inspTitle(i) { const c = (i.data.case || {}); const v = vehicleData(i); const veh = [v.year, v.make, v.model].filter(Boolean).join(' '); return (c.case || 'Untitled inspection') + (veh ? ' — ' + veh : ''); }
 
 /* ===================== state & routing ===================== */
 let S = { insp: null, sec: null, photos: [] };
@@ -1172,16 +1759,16 @@ async function renderList() {
   let html = '<div class="wrap"><div class="list-hd"><h2 style="font-size:22px">Inspections</h2><button class="btn primary" id="btnNew">+ New Inspection</button></div>';
   if (!all.length) html += '<div class="empty"><b>No inspections yet</b>Tap New Inspection to start, or Import a previously exported .zip.</div>';
   for (const i of all) {
-    let tot = 0, done = 0; for (const sid of i.enabled) { const p = sectionProgress(i, secById(sid)); tot += p.tot; done += p.done; }
-    const c = i.data.case || {};
-    html += `<div class="card" data-open="${i.id}"><div class="info"><div class="t">${esc(inspTitle(i))}</div><div class="m">${esc(fmtDate(c.vi_date))}${c.vi_loc ? ' · ' + esc(c.vi_loc) : ''} · updated ${new Date(i.updated).toLocaleDateString()}</div></div><div class="prog">${tot ? Math.round(done / tot * 100) : 0}%</div><button class="btn sm" data-dup="${i.id}">Copy</button><button class="btn sm danger" data-del="${i.id}">Delete</button></div>`;
+    let tot = 0, done = 0; for (const sid of i.enabled) { const s = secById(sid); if (!s) continue; const p = sectionProgress(i, s); tot += p.tot; done += p.done; }
+    const c = i.data.case || {}; const pr = profileById(i.profile);
+    html += `<div class="card" data-open="${i.id}"><div class="info"><div class="t">${esc(inspTitle(i))}</div><div class="m"><span class="badge">${esc(pr.short)}</span>${esc(fmtDate(c.vi_date))}${c.vi_loc ? ' · ' + esc(c.vi_loc) : ''} · updated ${new Date(i.updated).toLocaleDateString()}</div></div><div class="prog">${tot ? Math.round(done / tot * 100) : 0}%</div><button class="btn sm" data-dup="${i.id}">Copy</button><button class="btn sm danger" data-del="${i.id}">Delete</button></div>`;
   }
   $('#main').innerHTML = html + '</div>';
-  $('#btnNew').onclick = async () => { const i = blankInsp(); i.data.case = { vi_date: today() }; await DB.put('insp', i); location.hash = '#/i/' + i.id; };
+  $('#btnNew').onclick = () => pickProfile(async pid => { const i = blankInsp(pid); i.data.case = { vi_date: today() }; await DB.put('insp', i); location.hash = '#/i/' + i.id; });
   $('#main').onclick = async e => {
     const del = e.target.closest('[data-del]'); const dup = e.target.closest('[data-dup]'); const op = e.target.closest('[data-open]');
     if (del) { if (confirm('Delete this inspection and all its photos? This cannot be undone.')) { const ps = await DB.photosOf(del.dataset.del); for (const p of ps) await DB.del('photos', p.id); await DB.del('insp', del.dataset.del); renderList(); } return; }
-    if (dup) { const src = await DB.get('insp', dup.dataset.dup); const n = blankInsp(); n.enabled = src.enabled.slice(); n.data = { case: { ...(src.data.case || {}), vi_date: today() } }; await DB.put('insp', n); location.hash = '#/i/' + n.id; return; }
+    if (dup) { const src = await DB.get('insp', dup.dataset.dup); const n = blankInsp(src.profile); n.enabled = src.enabled.slice(); n.data = { case: { ...(src.data.case || {}), vi_date: today() } }; await DB.put('insp', n); location.hash = '#/i/' + n.id; return; }
     if (op) location.hash = '#/i/' + op.dataset.open;
   };
 }
@@ -1204,16 +1791,24 @@ function renderSide() {
   const i = S.insp;
   let h = '<div class="secs-hd"><span>Sections</span><button id="btnSecs">Edit</button></div>';
   for (const sid of i.enabled) {
-    const s = secById(sid); const p = sectionProgress(i, s);
+    const s = secById(sid); if (!s) continue; const p = sectionProgress(i, s);
     h += `<button class="sec ${sid === S.sec ? 'on' : ''}" data-sec="${sid}"><div class="nm"><span>${esc(s.short)}</span><span class="cnt">${p.done}/${p.tot}</span></div><div class="bar"><i style="width:${p.tot ? p.done / p.tot * 100 : 0}%"></i></div></button>`;
   }
   h += `<button class="sec" data-sec="__photos"><div class="nm"><span>Photo Log</span><span class="cnt">${S.photos.length}</span></div></button>`;
   $('#side').innerHTML = h;
   $('#side').onclick = e => { const b = e.target.closest('[data-sec]'); if (b) { S.sec = b.dataset.sec; history.replaceState(null, '', '#/i/' + i.id + '/' + S.sec); renderSide(); renderSection(); window.scrollTo(0, 0); } if (e.target.id === 'btnSecs') pickSections(); };
 }
+function pickProfile(cb) {
+  const html = PROFILES.map(p => `<button class="btn prof" data-prof="${p.id}"><b>${esc(p.label)}</b><small>${esc(p.hint)}</small></button>`).join('');
+  modal(`<h3>New inspection — vehicle type <button class="btn sm" data-close>Cancel</button></h3><div class="proflist">${html}</div><div class="hint" style="margin-top:10px">Sets which sections and field layouts the inspection starts with. Sections can still be added or removed later (Sections › Edit).</div>`, (box, close) => {
+    box.onclick = e => { const b = e.target.closest('[data-prof]'); if (!b) return; close(); cb(b.dataset.prof); };
+  });
+}
 function pickSections() {
   const i = S.insp;
-  const html = SCHEMA.map(s => `<label><input type="checkbox" data-s="${s.id}" ${i.enabled.includes(s.id) ? 'checked' : ''} ${s.always ? 'disabled' : ''}> ${esc(s.title)}</label>`).join('');
+  const pr = profileById(i.profile); const own = sectionsFor(pr.id); const other = SCHEMA.filter(s => !own.includes(s));
+  const row = s => `<label><input type="checkbox" data-s="${s.id}" ${i.enabled.includes(s.id) ? 'checked' : ''} ${s.always ? 'disabled' : ''}> ${esc(s.title)}${own.includes(s) ? '' : ` <span class="hint" style="margin-left:auto">${esc((s.profiles || []).map(p => profileById(p).short).join(' / '))}</span>`}</label>`;
+  const html = `<div class="secgrp">${esc(pr.label)} sections</div>${own.map(row).join('')}<details class="secother"><summary>Other sections (${other.length})</summary>${other.map(row).join('')}</details>`;
   modal(`<h3>Sections for this inspection <button class="btn sm" data-close>Done</button></h3><div class="secpick">${html}</div>`, box => {
     box.onchange = e => { const c = e.target.closest('[data-s]'); if (!c) return; const id = c.dataset.s; if (c.checked && !i.enabled.includes(id)) i.enabled = SCHEMA.map(s => s.id).filter(x => i.enabled.includes(x) || x === id); if (!c.checked) i.enabled = i.enabled.filter(x => x !== id); save(); if (!i.enabled.includes(S.sec)) S.sec = i.enabled[0]; renderSide(); renderSection(); };
   });
@@ -1245,7 +1840,7 @@ function renderSection() {
     }
     const na = curHd && i.na[sec.id + '.' + curHd];
     const v = d[f.id];
-    h += `<div class="f ${f.full || ['area', 'table', 'lr', 'lrsel', 'tread', 'status', 'multi'].includes(f.type) ? 'full' : ''} ${na ? 'na' : ''}" data-f="${f.id}"><div class="lbl"><span>${esc(f.label)}</span>${camBtn(sec.id, f.id)}</div><div class="body">${fieldInput(f, v)}</div>${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ''}${thumbs(sec.id, f.id)}</div>`;
+    h += `<div class="f ${f.full || ['area', 'table', 'lr', 'lrsel', 'mc', 'tread', 'status', 'multi'].includes(f.type) ? 'full' : ''} ${na ? 'na' : ''}" data-f="${f.id}"><div class="lbl"><span>${esc(f.label)}</span>${camBtn(sec.id, f.id)}</div><div class="body">${fieldInput(f, v)}</div>${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ''}${thumbs(sec.id, f.id)}</div>`;
   }
   h += '</div></div>';
   h += `<div class="bottombar"><button class="btn" id="prevSec">‹ Previous</button><button class="btn primary" id="nextSec">Next Section ›</button></div>`;
@@ -1266,6 +1861,7 @@ function fieldInput(f, v) {
     case 'status': { const o = v || {}; return `<div class="status">${chipsHtml(f.opts, o.s)}<input class="in" data-k="c" value="${esc(o.c)}" placeholder="Comment" autocomplete="off"></div>`; }
     case 'lr': { const o = v || {}; const c = f.cols || ['Left', 'Right']; return `<div class="lr"><div><label>${esc(c[0])}</label><input class="in" data-k="l" value="${esc(o.l)}" autocomplete="off"></div><div><label>${esc(c[1])}</label><input class="in" data-k="r" value="${esc(o.r)}" autocomplete="off"></div></div>`; }
     case 'lrsel': { const o = v || {}; return `<div class="lr"><div><label>Left</label><div data-sub="l">${chipsHtml(f.opts, o.l)}</div><input class="in" data-k="lc" value="${esc(o.lc)}" placeholder="Comment" style="margin-top:6px" autocomplete="off"></div><div><label>Right</label><div data-sub="r">${chipsHtml(f.opts, o.r)}</div><input class="in" data-k="rc" value="${esc(o.rc)}" placeholder="Comment" style="margin-top:6px" autocomplete="off"></div></div>`; }
+    case 'mc': { const o = v || {}; return `<div class="mc c${f.cols.length}">${f.cols.map((c, k) => `<div><label>${esc(c)}</label><input class="in" data-k="c${k}" value="${esc(o['c' + k])}" autocomplete="off"></div>`).join('')}</div>`; }
     case 'tread': { const o = v || {}; return `<div class="tread">${['o:Outside', 'm:Middle', 'i:Inside'].map(x => { const [k, l] = x.split(':'); return `<div><label>${l}</label><div class="u"><input class="in" data-k="${k}" value="${esc(o[k])}" inputmode="decimal"><span>/32</span></div></div>`; }).join('')}</div>`; }
     case 'table': {
       let rows = Array.isArray(v) ? v : []; if (!rows.length) rows = f.seed ? f.seed.map(s => ({ [f.columns[0].id]: s })) : [{}];
@@ -1308,7 +1904,7 @@ function bindSection(sec, d) {
 function tableRows(f, d) { let rows = Array.isArray(d[f.id]) ? d[f.id].map(r => ({ ...r })) : []; if (!rows.length) rows = f.seed ? f.seed.map(s => ({ [f.columns[0].id]: s })) : [{}]; return rows; }
 function setChips(wrap, val) { wrap.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c.dataset.opt === val)); }
 function rerenderField(sec, f, d) { const fe = $(`#main [data-f="${f.id}"]`); if (fe) fe.querySelector('.body').innerHTML = fieldInput(f, d[f.id]); }
-function updateSideCount(sec) { const p = sectionProgress(S.insp, sec); const b = $(`#side [data-sec="${sec.id}"]`); if (b) { b.querySelector('.cnt').textContent = `${p.done}/${p.tot}`; b.querySelector('.bar i').style.width = (p.tot ? p.done / p.tot * 100 : 0) + '%'; } if (sec.id === 'case' || sec.id === 'vehicle') $('#ttl').textContent = inspTitle(S.insp); }
+function updateSideCount(sec) { const p = sectionProgress(S.insp, sec); const b = $(`#side [data-sec="${sec.id}"]`); if (b) { b.querySelector('.cnt').textContent = `${p.done}/${p.tot}`; b.querySelector('.bar i').style.width = (p.tot ? p.done / p.tot * 100 : 0) + '%'; } if (sec.id === 'case' || isVehicleSection(sec.id)) $('#ttl').textContent = inspTitle(S.insp); }
 
 async function decodeVin(d) {
   const vin = (d.vin || '').trim().toUpperCase(); if (vin.length !== 17) return toast('VIN must be 17 characters');
@@ -1317,8 +1913,15 @@ async function decodeVin(d) {
   try {
     const r = await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${vin}?format=json`); const j = await r.json(); const x = j.Results[0];
     const set = (k, v) => { if (v && !d[k]) d[k] = v; };
-    set('year', x.ModelYear); set('make', titleCase(x.Make)); set('model', x.Model); set('trim', [x.Trim, x.Series].filter(Boolean).join(' / ')); set('body', x.BodyClass); set('doors', x.Doors ? x.Doors + ' door' : '');
+    set('year', x.ModelYear); set('make', titleCase(x.Make)); set('model', x.Model); set('trim', [x.Trim, x.Series].filter(Boolean).join(' / ')); set('doors', x.Doors ? x.Doors + ' door' : '');
     set('engine', [x.DisplacementL ? x.DisplacementL + 'L' : '', x.EngineCylinders ? x.EngineCylinders + ' cyl' : '', x.FuelTypePrimary, x.ElectrificationLevel].filter(Boolean).join(' '));
+    // heavy / trailer info sections: fill what maps cleanly, put the rest of the decode in Notes for the engineer to sort
+    if (isVehicleSection(S.sec) && S.sec !== 'vehicle') {
+      set('eng_make', [x.EngineManufacturer, x.EngineModel].filter(Boolean).join(' ')); set('wb', x.WheelBaseShort); set('length', x.TrailerLength);
+      if (x.FuelTypePrimary && !d.fuel) { const ft = x.FuelTypePrimary.toLowerCase(); d.fuel = ft.includes('diesel') ? 'Diesel' : ft.includes('gas') ? 'Gasoline' : ft.includes('electric') ? 'Battery Electric' : (ft.includes('cng') || ft.includes('natural')) ? 'CNG / LNG' : (ft.includes('propane') || ft.includes('lpg')) ? 'Propane' : ''; }
+      const extra = [x.BodyClass, x.CabType, x.TrailerType, x.TrailerBodyType, x.Axles ? x.Axles + ' axles' : '', x.AxleConfiguration, x.GVWR, x.BrakeSystemType ? 'Brakes: ' + x.BrakeSystemType : ''].filter(Boolean).join(' · ');
+      if (extra && !d.notes) d.notes = 'NHTSA decode: ' + extra;
+    } else set('body', x.BodyClass);
     if (x.DriveType && !d.drive) { const m = { 'FWD': 'FWD', 'RWD': 'RWD', '4WD': '4WD', 'AWD': 'AWD' }; for (const k in m) if (x.DriveType.toUpperCase().includes(k)) d.drive = m[k]; }
     if (x.TransmissionStyle && !d.trans) d.trans = /auto|cvt/i.test(x.TransmissionStyle) ? (/cvt/i.test(x.TransmissionStyle) ? 'CVT' : 'Automatic') : 'Standard';
     if (x.GVWR && !d.gvwr) { const m = x.GVWR.match(/\(([\d,]+)\s*lb/); if (m) d.gvwr = m[1].replace(/,/g, ''); }
@@ -1359,7 +1962,7 @@ function photoModal(id) {
   });
 }
 function movePhoto(p) {
-  const opts = []; for (const sid of S.insp.enabled) { const s = secById(sid); for (const f of s.fields) opts.push(`<option value="${sid}|${f.id}" ${p.sec === sid && p.field === f.id ? 'selected' : ''}>${esc(s.short)} › ${esc(f.label)}</option>`); }
+  const opts = []; for (const sid of S.insp.enabled) { const s = secById(sid); if (!s) continue; for (const f of s.fields) opts.push(`<option value="${sid}|${f.id}" ${p.sec === sid && p.field === f.id ? 'selected' : ''}>${esc(s.short)} › ${esc(f.label)}</option>`); }
   modal(`<h3>Move photo ${p.num} <button class="btn sm" data-close>Cancel</button></h3><select class="in" id="mvSel">${opts.join('')}</select><div class="row" style="margin-top:12px"><button class="btn primary" id="mvOk">Move</button></div>`, (box, close) => {
     box.querySelector('#mvOk').onclick = async () => { const [sid, fid] = box.querySelector('#mvSel').value.split('|'); p.sec = sid; p.field = fid; await DB.put('photos', toRecord(p)); close(); renderSection(); renderSide(); };
   });
@@ -1383,6 +1986,7 @@ function valHtml(f, v, blank) {
     case 'status': return `<div class="v">${esc([v.s, v.c].filter(Boolean).join(' — '))}</div>`;
     case 'lr': { const c = f.cols || ['Left', 'Right']; return `<div class="v"><div class="lrv"><div><small>${esc(c[0])}</small>${esc(v.l)}</div><div><small>${esc(c[1])}</small>${esc(v.r)}</div></div></div>`; }
     case 'lrsel': return `<div class="v"><div class="lrv"><div><small>Left</small>${esc([v.l, v.lc].filter(Boolean).join(' — '))}</div><div><small>Right</small>${esc([v.r, v.rc].filter(Boolean).join(' — '))}</div></div></div>`;
+    case 'mc': return `<div class="v"><div class="lrv c${f.cols.length}">${f.cols.map((c, k) => `<div><small>${esc(c)}</small>${esc(v['c' + k])}</div>`).join('')}</div></div>`;
     case 'tread': return `<div class="v">Outside ${esc(v.o || '—')}/32 · Middle ${esc(v.m || '—')}/32 · Inside ${esc(v.i || '—')}/32</div>`;
     case 'table': return tableHtml(f, v);
     case 'date': return `<div class="v">${esc(fmtDate(v))}</div>`;
@@ -1414,12 +2018,12 @@ function renderReport() {
   const turls = {}; for (const p of S.photos) turls[p.id] = p.thumb;
   const opts = S.rpOpts = { blank: false, allFields: false, photos: true, log: true, appendix: true, per: 4 };
   const build = () => {
-    const c = i.data.case || {}; const v = i.data.vehicle || {};
+    const c = i.data.case || {}; const v = vehicleData(i); const pr = profileById(i.profile);
     let h = `<div class="rp-tools"><span style="font-weight:600;font-size:14px">Report options:</span><label><input type="checkbox" id="oBlank" ${opts.blank ? 'checked' : ''}> Blank form (for handwriting)</label><label><input type="checkbox" id="oAll" ${opts.allFields ? 'checked' : ''}> Include empty fields</label><label><input type="checkbox" id="oPh" ${opts.photos ? 'checked' : ''}> Photos inline</label><label><input type="checkbox" id="oLog" ${opts.log ? 'checked' : ''}> Photo log</label><label><input type="checkbox" id="oApx" ${opts.appendix ? 'checked' : ''}> Photo appendix</label><label>per page <select id="oPer" ${opts.appendix ? '' : 'disabled'}>${[1, 2, 4, 6].map(n => `<option value="${n}" ${opts.per === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label><button class="btn sm" id="rpPrint" style="margin-left:auto;color:#111">Print (browser)</button></div><div class="rp ${opts.blank ? 'blankform' : ''}">`;
-    h += `<div class="cover"><h1>Vehicle Inspection Notes</h1><div class="k"><b>Case</b><span>${esc(c.case)}</span><b>Date</b><span>${esc(fmtDate(c.vi_date))}</span><b>Vehicle</b><span>${esc([v.year, v.make, v.model, v.trim].filter(Boolean).join(' '))}</span><b>VIN</b><span>${esc(v.vin)}</span><b>Location</b><span>${esc(c.vi_loc)}</span><b>Engineers</b><span>${esc(c.vi_eng)}</span><b>Client</b><span>${esc(c.client)}</span><b>File No.</b><span>${esc(c.fileno)}</span></div></div>`;
+    h += `<div class="cover"><h1>${esc(pr.doc)}</h1><div class="k"><b>Case</b><span>${esc(c.case)}</span><b>Date</b><span>${esc(fmtDate(c.vi_date))}</span><b>${pr.id === 'trailer' ? 'Trailer' : 'Vehicle'}</b><span>${esc([v.year, v.make, v.model, v.trim].filter(Boolean).join(' '))}</span><b>VIN</b><span>${esc(v.vin)}</span><b>Type</b><span>${esc(pr.label)}</span><b>Unit / Plate</b><span>${esc([v.unit, v.license].filter(Boolean).join(' · '))}</span><b>Location</b><span>${esc(c.vi_loc)}</span><b>Engineers</b><span>${esc(c.vi_eng)}</span><b>Client</b><span>${esc(c.client)}</span><b>File No.</b><span>${esc(c.fileno)}</span></div></div>`;
     let first = true;
     for (const sid of i.enabled) {
-      const s = secById(sid); const d = i.data[sid] || {};
+      const s = secById(sid); if (!s) continue; const d = i.data[sid] || {};
       let body = ''; let grpHtml = ''; let grpBody = ''; let grpNa = false; let open = false;
       const closeGrp = () => { if (open) grpBody += '</div>'; open = false; if (grpHtml && (grpBody.trim() || grpNa || opts.allFields || opts.blank)) body += grpHtml + grpBody; else body += grpBody; grpHtml = ''; grpBody = ''; };
       for (const f of s.fields) {
@@ -1433,7 +2037,7 @@ function renderReport() {
         const vh = valHtml(f, d[f.id], opts.blank); const ps = opts.photos && !opts.blank ? photosFor(sid, f.id) : [];
         if (!vh && !opts.allFields && !ps.length) continue;
         if (!open) { grpBody += '<div class="kv">'; open = true; }
-        const wide = f.full || ['area', 'table', 'lr', 'lrsel', 'multi'].includes(f.type) || ps.length;
+        const wide = f.full || ['area', 'table', 'lr', 'lrsel', 'mc', 'multi'].includes(f.type) || ps.length;
         grpBody += `<div class="it ${wide ? 'full' : ''}"><div class="k">${esc(f.label)}</div>${vh || '<div class="v"></div>'}</div>`;
         if (ps.length) { grpBody += `<div class="it full">${photosHtml(ps, opts.appendix ? turls : urls, opts)}</div>`; }
       }
@@ -1488,21 +2092,34 @@ async function unzip(buf) { // supports stored (0) and deflate (8, via Decompres
   }
   return out;
 }
+/* Hand a built file to the user. iOS only allows navigator.share() inside a fresh tap; packaging a big
+   inspection outlives the tap that started it, share() is then rejected (NotAllowedError) and the old
+   <a download> fallback just opened a blank page in home-screen mode. So: build first, then ask for one
+   more tap and call share() directly inside that tap. Desktop browsers (no share sheet) download as before. */
+function fmtMB(n) { return n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
+function deliverFile(file, label, note) {
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    return new Promise(res => modal(`<h3>${label} ready <button class="btn sm" data-close>Cancel</button></h3><div class="hint">${file.name} &middot; ${fmtMB(file.size)}${note ? ' &middot; ' + note : ''}</div><div class="row" style="margin-top:12px"><button class="btn primary" id="shareOk">Save / Share…</button></div><div class="hint" style="margin-top:8px">Pick <b>Save to Files</b>, AirDrop, Mail, etc. from the share sheet.</div>`, (box, close) => {
+      box.querySelector('#shareOk').onclick = () => {
+        navigator.share({ files: [file] }).then(() => { close(); toast('Saved'); res(true); })
+          .catch(e => { if (e.name === 'AbortError') return; close(); console.error(e); alert(label + ' could not be shared (' + (e.message || e.name) + '). Try again, or free up space if the file is very large.'); res(false); });
+      };
+    }));
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  toast('Saved ' + file.name); return Promise.resolve(true);
+}
 async function exportZip() {
-  const i = S.insp; toast('Packaging…');
+  const i = S.insp; const btn = $('#btnExport'); if (btn) { btn.disabled = true; btn.textContent = 'Packaging…'; }
   try {
     const meta = { app: 'vi-notes', version: 1, inspection: i, photos: S.photos.map(p => ({ id: p.id, num: p.num, sec: p.sec, field: p.field, ts: p.ts, caption: p.caption, file: `photos/P${String(p.num).padStart(3, '0')}.jpg`, origName: p.origName })) };
     const entries = [{ name: 'inspection.json', data: new TextEncoder().encode(JSON.stringify(meta, null, 1)) }];
     for (const p of S.photos) { const buf = p.origBuf || p.repBuf || dataUrlToBuf(p.thumb); entries.push({ name: `photos/P${String(p.num).padStart(3, '0')}.jpg`, data: new Uint8Array(buf) }); }
     const blob = zipStore(entries); const c = i.data.case || {};
     const name = ((c.case || 'inspection').replace(/[^\w\- ]+/g, '').trim() || 'inspection') + '_' + (c.vi_date || today()) + '.zip';
-    const file = new File([blob], name, { type: 'application/zip' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) { // iPad / phone: share sheet (Save to Files, AirDrop, Mail…)
-      try { await navigator.share({ files: [file] }); toast('Exported'); return; } catch (e) { if (e.name === 'AbortError') return; }
-    }
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    toast('Exported ' + name);
+    await deliverFile(new File([blob], name, { type: 'application/zip' }), 'Export', S.photos.length + ' photos');
   } catch (e) { console.error(e); alert('Export failed: ' + (e.message || e)); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = 'Export'; } }
 }
 $('#impInput').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
@@ -1559,16 +2176,17 @@ const PDF = (() => {
     const lw = w * LBLW, vx = x + lw + 6, vw = w - lw - 6;
     const blank = opts.blank;
     let h;
-    if (f.type === 'lr' || f.type === 'lrsel') {
-      const c = f.type === 'lr' ? (f.cols || ['Left', 'Right']) : ['Left', 'Right'];
-      const o = v || {}; const half = (vw - 8) / 2;
-      const lv = f.type === 'lr' ? o.l : [o.l, o.lc].filter(Boolean).join(' — '); const rv = f.type === 'lr' ? o.r : [o.r, o.rc].filter(Boolean).join(' — ');
-      h = Math.max(blank ? 24 : 12 + Math.max(measure(lv, half, 9.5), measure(rv, half, 9.5)), 12);
+    if (f.type === 'lr' || f.type === 'lrsel' || f.type === 'mc') {
+      // n labelled columns (2 for lr/lrsel, f.cols.length for mc)
+      const c = f.type === 'mc' ? f.cols : f.type === 'lr' ? (f.cols || ['Left', 'Right']) : ['Left', 'Right'];
+      const o = v || {}; const n = c.length; const gap = 8; const cw = (vw - gap * (n - 1)) / n;
+      const vals = f.type === 'mc' ? c.map((_, k) => o['c' + k]) : f.type === 'lr' ? [o.l, o.r] : [[o.l, o.lc].filter(Boolean).join(' — '), [o.r, o.rc].filter(Boolean).join(' — ')];
+      h = Math.max(blank ? 24 : 12 + Math.max(...vals.map(t => measure(t, cw, 9.5))), 12);
       ensure(h + 6);
       textBlock(f.label, x, lw, 7.5, 'bold', GRAY);
-      font('normal', 6.5, [107, 114, 128]); doc.text(c[0], vx, y, { baseline: 'top' }); doc.text(c[1], vx + half + 8, y, { baseline: 'top' });
-      if (blank) { if (f.opts) { font('normal', 7.5, GRAY); doc.text(f.opts.join(' / '), vx, y + 10, { baseline: 'top' }); doc.text(f.opts.join(' / '), vx + half + 8, y + 10, { baseline: 'top' }); } doc.setDrawColor(0); doc.setLineWidth(.5); doc.line(vx, y + h, vx + half, y + h); doc.line(vx + half + 8, y + h, vx + vw, y + h); }
-      else { const sy = y; y += 9; textBlock(lv, vx, half, 9.5); y = sy + 9; textBlock(rv, vx + half + 8, half, 9.5); y = sy; }
+      font('normal', 6.5, [107, 114, 128]); c.forEach((cl, k) => doc.text(cl, vx + k * (cw + gap), y, { baseline: 'top' }));
+      if (blank) { doc.setDrawColor(0); doc.setLineWidth(.5); c.forEach((cl, k) => { const cx = vx + k * (cw + gap); if (f.opts) { font('normal', 7.5, GRAY); doc.text(f.opts.join(' / '), cx, y + 10, { baseline: 'top' }); } doc.line(cx, y + h, cx + cw, y + h); }); }
+      else { const sy = y; vals.forEach((t, k) => { y = sy + 9; textBlock(t, vx + k * (cw + gap), cw, 9.5); }); y = sy; }
     } else if (f.type === 'table') {
       return tableBlock(f, v, x, w, opts);
     } else {
@@ -1623,10 +2241,10 @@ const PDF = (() => {
 
   async function build(insp, photos, opts, progress) {
     doc = new jspdf.jsPDF({ unit: 'pt', format: 'letter', compress: true }); page = 1; y = M; links = []; secPage = {}; appPos = {};
-    const c = insp.data.case || {}, v = insp.data.vehicle || {};
+    const c = insp.data.case || {}, v = vehicleData(insp), pr = profileById(insp.profile);
     // cover block
-    font('bold', 18, NAVY); doc.text('Vehicle Inspection Notes', M, y, { baseline: 'top' }); y += 26;
-    const kv = [['Case', c.case], ['Date', fmtDate(c.vi_date)], ['Vehicle', [v.year, v.make, v.model, v.trim].filter(Boolean).join(' ')], ['VIN', v.vin], ['Location', c.vi_loc], ['Engineers', c.vi_eng], ['Client', c.client], ['File No.', c.fileno]];
+    font('bold', 18, NAVY); doc.text(pr.doc, M, y, { baseline: 'top' }); y += 26;
+    const kv = [['Case', c.case], ['Date', fmtDate(c.vi_date)], [pr.id === 'trailer' ? 'Trailer' : 'Vehicle', [v.year, v.make, v.model, v.trim].filter(Boolean).join(' ')], ['VIN', v.vin], ['Type', pr.label], ['Unit / Plate', [v.unit, v.license].filter(Boolean).join(' · ')], ['Location', c.vi_loc], ['Engineers', c.vi_eng], ['Client', c.client], ['File No.', c.fileno]];
     for (let i = 0; i < kv.length; i += 2) {
       let rh = 0;
       for (let k = 0; k < 2; k++) { const [l, val] = kv[i + k]; const x = M + k * (CW / 2 + 6); font('bold', 7.5, GRAY); doc.text(l.toUpperCase(), x, y, { baseline: 'top' }); const sy = y; const h = textBlock(val || '', x + 62, CW / 2 - 70, 9.5); y = sy; rh = Math.max(rh, h, 12); }
@@ -1636,7 +2254,7 @@ const PDF = (() => {
 
     const inlineOn = opts.photos && !opts.blank;
     for (const sid of insp.enabled) {
-      const s = secById(sid); const d = insp.data[sid] || {};
+      const s = secById(sid); if (!s) continue; const d = insp.data[sid] || {};
       // decide whether the section has anything to show
       const groups = []; let g = { hdr: null, fields: [] };
       for (const f of s.fields) { if (f.type === 'heading') { groups.push(g); g = { hdr: f, fields: [] }; } else g.fields.push(f); } groups.push(g);
@@ -1662,7 +2280,7 @@ const PDF = (() => {
         let col = 0, rowY = 0, rowH = 0;
         const flush = () => { if (col === 1) { y = rowY + rowH; col = 0; } };
         for (const r of it.rows) {
-          const wide = r.f.full || ['area', 'table', 'lr', 'lrsel', 'multi', 'tread', 'status'].includes(r.f.type) || r.ps.length;
+          const wide = r.f.full || ['area', 'table', 'lr', 'lrsel', 'mc', 'multi', 'tread', 'status'].includes(r.f.type) || r.ps.length;
           if (wide) { flush(); const h = fieldRow(r.f, r.val, M, CW, opts); y += h; inlinePhotos(r.ps, opts); }
           else {
             const colW = (CW - 16) / 2;
@@ -1716,7 +2334,7 @@ const PDF = (() => {
     // signature + footer
     ensure(50); y += 20; doc.setDrawColor(0); doc.setLineWidth(.6); doc.line(M, y, M + CW / 2 - 15, y); doc.line(M + CW / 2 + 15, y, M + CW, y); font('normal', 8, GRAY); doc.text('Engineer', M, y + 4, { baseline: 'top' }); doc.text('Date', M + CW / 2 + 15, y + 4, { baseline: 'top' });
     const N = doc.getNumberOfPages();
-    for (let p = 1; p <= N; p++) { doc.setPage(p); font('normal', 7.5, [107, 114, 128]); doc.text(`${c.case || 'Inspection'} — Vehicle Inspection Notes`, M, FOOT, { baseline: 'top' }); doc.text(`Page ${p} of ${N}`, M + CW, FOOT, { baseline: 'top', align: 'right' }); }
+    for (let p = 1; p <= N; p++) { doc.setPage(p); font('normal', 7.5, [107, 114, 128]); doc.text(`${c.case || 'Inspection'} — ${pr.doc}`, M, FOOT, { baseline: 'top' }); doc.text(`Page ${p} of ${N}`, M + CW, FOOT, { baseline: 'top', align: 'right' }); }
     // links: inline -> appendix, appendix label -> section, log -> both
     for (const l of links) { const a = appPos[l.pid]; if (!a) continue; doc.setPage(l.page); doc.link(l.x, l.y, l.w, l.h, { pageNumber: a.page, top: a.top }); }
     for (const pid in appPos) { const a = appPos[pid]; const sp = secPage[a.sec]; if (!sp) continue; doc.setPage(a.page); doc.link(a.x, a.lblY - 1, a.w - 90, 10, { pageNumber: sp.page, top: sp.top }); }
@@ -1733,9 +2351,7 @@ async function savePdf(opts) {
   const btn = $('#btnPrint'); if (btn) { btn.disabled = true; btn.textContent = 'Building…'; }
   try {
     const blob = await PDF.build(i, S.photos, opts, m => { if (btn) btn.textContent = m; });
-    const file = new File([blob], name, { type: 'application/pdf' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; } }
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    await deliverFile(new File([blob], name, { type: 'application/pdf' }), opts.blank ? 'Blank form' : 'PDF');
   } catch (e) { console.error(e); alert('PDF failed: ' + (e.message || e)); }
   finally { if (btn) { btn.disabled = false; btn.textContent = 'Save PDF'; } }
 }
