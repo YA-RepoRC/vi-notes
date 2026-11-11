@@ -2041,8 +2041,8 @@ function appendixHtml(ps, urls, per) {
 function renderReport() {
   const i = S.insp; $('#app').classList.add('hidden'); const R = $('#report'); R.classList.remove('hidden');
   $('#btnBack').classList.remove('hidden'); $('#btnBack').onclick = () => { location.hash = '#/i/' + i.id + '/' + (S.sec || ''); };
-  $('#ttl').textContent = 'Report — ' + inspTitle(i); $('#sub').textContent = ''; $('#topActs').innerHTML = '<button class="tb" id="btnPrint">Save PDF</button>';
-  $('#btnPrint').onclick = () => savePdf(S.rpOpts);
+  $('#ttl').textContent = 'Report — ' + inspTitle(i); $('#sub').textContent = ''; $('#topActs').innerHTML = '<button class="tb" id="btnPkg" title="Folder with the PDF and the full-resolution photos, linked">Save package</button><button class="tb" id="btnPrint">Save PDF</button>';
+  $('#btnPrint').onclick = () => savePdf(S.rpOpts); $('#btnPkg').onclick = () => savePackage(S.rpOpts);
   const urls = {}; for (const p of S.photos) urls[p.id] = URL.createObjectURL(p.rep);
   const turls = {}; for (const p of S.photos) turls[p.id] = p.thumb;
   const opts = S.rpOpts = { blank: false, allFields: false, photos: true, log: true, appendix: true, per: 4 };
@@ -2425,9 +2425,10 @@ const PDF = (() => {
         const s = secById(p.sec); const f = s && fieldOf(s, p.field);
         font('bold', 9, NAVY); doc.text(`Photo ${p.num}`, x, top + bh + 4, { baseline: 'top' }); const nw = doc.getTextWidth(`Photo ${p.num}`);
         font('normal', 8.5); const capL = lines(p.caption ? ' — ' + p.caption : '', bw - nw - 2); if (capL[0]) doc.text(capL[0], x + nw, top + bh + 4.5, { baseline: 'top' });
-        const lbl = (s ? s.title : p.sec) + (f ? ' › ' + f.label : ''); font('normal', 7.5, LINK); doc.text(lines(lbl, bw - 90)[0], x, top + bh + 15, { baseline: 'top' });
-        font('normal', 7.5, [107, 114, 128]); doc.text(new Date(p.ts).toLocaleString(), x + bw, top + bh + 15, { baseline: 'top', align: 'right' });
-        appPos[p.id] = { page, top, x, w: bw, lblY: top + bh + 15, sec: p.sec };
+        const lbl = (s ? s.title : p.sec) + (f ? ' › ' + f.label : ''); const fl = opts.fileLinks ? PHOTO_FILE(p).split('/').pop() : ''; const rsv = fl ? 140 : 90; font('normal', 7.5, LINK); doc.text(lines(lbl, bw - rsv)[0], x, top + bh + 15, { baseline: 'top' });
+        font('normal', 7.5, [107, 114, 128]); const tsT = new Date(p.ts).toLocaleString(); doc.text(tsT, x + bw, top + bh + 15, { baseline: 'top', align: 'right' });
+        if (fl) { const tw = doc.getTextWidth(tsT + '  '); font('normal', 7.5, LINK); doc.text(fl, x + bw - tw, top + bh + 15, { baseline: 'top', align: 'right' }); }
+        appPos[p.id] = { page, top, x, w: bw, h: bh, rsv, lblY: top + bh + 15, sec: p.sec, file: fl ? PHOTO_FILE(p) : '' };
         k++; if (k % cols === 0) y = top + bh + 30; else if (i === sorted.length - 1) y = top + bh + 30;
       }
     }
@@ -2437,7 +2438,7 @@ const PDF = (() => {
     for (let p = 1; p <= N; p++) { doc.setPage(p); font('normal', 7.5, [107, 114, 128]); doc.text(`${c.case || 'Inspection'} — ${pr.doc}`, M, FOOT, { baseline: 'top' }); doc.text(`Page ${p} of ${N}`, M + CW, FOOT, { baseline: 'top', align: 'right' }); }
     // links: inline -> appendix, appendix label -> section, log -> both
     for (const l of links) { const a = appPos[l.pid]; if (!a) continue; doc.setPage(l.page); doc.link(l.x, l.y, l.w, l.h, { pageNumber: a.page, top: a.top }); }
-    for (const pid in appPos) { const a = appPos[pid]; const sp = secPage[a.sec]; if (!sp) continue; doc.setPage(a.page); doc.link(a.x, a.lblY - 1, a.w - 90, 10, { pageNumber: sp.page, top: sp.top }); }
+    for (const pid in appPos) { const a = appPos[pid]; doc.setPage(a.page); if (a.file) { doc.link(a.x, a.top, a.w, a.h, { url: a.file }); doc.link(a.x + a.w - a.rsv, a.lblY - 1, a.rsv, 10, { url: a.file }); } const sp = secPage[a.sec]; if (!sp) continue; doc.link(a.x, a.lblY - 1, a.w - a.rsv, 10, { pageNumber: sp.page, top: sp.top }); }
     for (const r of logRows) { doc.setPage(r.page); const a = appPos[r.p.id]; if (a) doc.link(M, r.y, 34, r.rh, { pageNumber: a.page, top: a.top }); const sp = secPage[r.p.sec]; if (sp) doc.link(M + 34, r.y, 250, r.rh, { pageNumber: sp.page, top: sp.top }); }
     doc.setPage(1);
     return doc.output('blob');
@@ -2454,5 +2455,37 @@ async function savePdf(opts) {
     await deliverFile(new File([blob], name, { type: 'application/pdf' }), opts.blank ? 'Blank form' : 'PDF');
   } catch (e) { console.error(e); alert('PDF failed: ' + (e.message || e)); }
   finally { if (btn) { btn.disabled = false; btn.textContent = 'Save PDF'; } }
+}
+
+/* Report package: one folder holding the PDF and photos/P###.jpg (full resolution). The PDF's appendix
+   photos link to those files by relative path, so the links hold as long as the folder is kept together. */
+async function savePackage(opts) {
+  const i = S.insp; const c = i.data.case || {};
+  const base = ((c.case || 'inspection').replace(/[^\w\- ]+/g, '').trim() || 'inspection') + '_' + (c.vi_date || today());
+  const o = { ...opts, blank: false, appendix: true, fileLinks: true };
+  const btn = $('#btnPkg'); const say = m => { if (btn) btn.textContent = m; };
+  const photos = S.photos.slice().sort((a, b) => a.num - b.num);
+  let root = null;
+  if (window.showDirectoryPicker) { try { root = await window.showDirectoryPicker({ mode: 'readwrite' }); } catch (e) { if (e.name === 'AbortError') return; root = null; } }
+  if (btn) btn.disabled = true;
+  try {
+    say('Building PDF…'); const blob = await PDF.build(i, S.photos, o, say);
+    if (root) {
+      let name = base + '_Report', k = 1;
+      for (;;) { try { await root.getDirectoryHandle(name); k++; name = base + '_Report (' + k + ')'; } catch (e) { break; } }
+      const dir = await root.getDirectoryHandle(name, { create: true }); const pdir = await dir.getDirectoryHandle('photos', { create: true });
+      const put = async (d, n, data) => { const fh = await d.getFileHandle(n, { create: true }); const w = await fh.createWritable(); await w.write(data); await w.close(); };
+      await put(dir, base + '.pdf', blob);
+      for (let k2 = 0; k2 < photos.length; k2++) { say(`Photo ${k2 + 1} of ${photos.length}`); await put(pdir, PHOTO_FILE(photos[k2]).split('/').pop(), photoBuf(photos[k2])); }
+      toast('Saved folder ' + name); modal(`<h3>Report package saved <button class="btn sm" data-close>Done</button></h3><div class="hint">Folder <b>${esc(name)}</b> in ${esc(root.name)}: ${esc(base)}.pdf and photos/ (${photos.length} files). Keep the PDF and the photos folder together so the photo links keep working.</div>`);
+    } else {
+      const total = photos.reduce((a, p) => a + photoBuf(p).byteLength, 0);
+      if (total > 400 * 1048576 && !confirm('This package is about ' + fmtMB(total) + ' and has to be built in memory as one zip on this device. It may fail on an iPad — a desktop browser (Edge/Chrome) saves straight to a folder instead. Try anyway?')) return;
+      say('Packaging…'); const entries = [{ name: base + '_Report/' + base + '.pdf', data: new Uint8Array(await blob.arrayBuffer()) }];
+      for (const p of photos) entries.push({ name: base + '_Report/' + PHOTO_FILE(p), data: new Uint8Array(photoBuf(p)) });
+      await deliverFile(new File([zipStore(entries)], base + '_Report.zip', { type: 'application/zip' }), 'Report package');
+    }
+  } catch (e) { console.error(e); alert('Could not save the report package: ' + (e.message || e)); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = 'Save package'; } }
 }
 </script></body></html>
