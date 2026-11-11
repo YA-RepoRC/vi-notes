@@ -1967,13 +1967,42 @@ function movePhoto(p) {
     box.querySelector('#mvOk').onclick = async () => { const [sid, fid] = box.querySelector('#mvSel').value.split('|'); p.sec = sid; p.field = fid; await DB.put('photos', toRecord(p)); close(); renderSection(); renderSide(); };
   });
 }
+/* ---------- photo renumbering ---------- */
+function photosReportOrder() {
+  const out = []; const seen = new Set();
+  for (const sid of S.insp.enabled) { const s = secById(sid); if (!s) continue; for (const f of s.fields) for (const p of photosFor(sid, f.id)) { out.push(p); seen.add(p.id); } }
+  for (const p of S.photos.slice().sort((a, b) => a.num - b.num)) if (!seen.has(p.id)) out.push(p);
+  return out;
+}
+function photoNumState() {
+  const byNum = S.photos.slice().sort((a, b) => a.num - b.num); const n = byNum.length;
+  const gaps = byNum.some((p, k) => p.num !== k + 1);
+  const ro = photosReportOrder(); let ooo = false; for (let k = 1; k < ro.length; k++) if (ro[k].num < ro[k - 1].num) { ooo = true; break; }
+  return { n, gaps, ooo, last: n ? byNum[n - 1].num : 0 };
+}
+async function renumberPhotos(mode) {
+  const order = mode === 'time' ? S.photos.slice().sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : a.num - b.num)) : photosReportOrder();
+  let changed = 0;
+  for (let k = 0; k < order.length; k++) { const p = order[k]; if (p.num !== k + 1) { p.num = k + 1; await DB.put('photos', toRecord(p)); changed++; } }
+  S.insp.photoSeq = order.length; await saveNow();
+  return changed;
+}
+function renumberModal() {
+  const st = photoNumState();
+  modal(`<h3>Renumber photos <button class="btn sm" data-close>Cancel</button></h3><div class="hint" style="margin-bottom:12px">${st.n} photos, currently numbered up to ${st.last}. Renumbering makes them 1–${st.n} with no gaps. Captions, timestamps, original file names and section links are not changed. PDFs or exports made earlier will still show the old numbers.</div><div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn primary" id="rnRep">In report order</button><button class="btn" id="rnTime">In order taken</button></div><div class="hint" style="margin-top:10px"><b>Report order</b>: numbers increase as you read down the report, section by section. <b>Order taken</b>: numbers follow the time each photo was shot; the photo log and appendix run in sequence, but inline photos can jump if you shot out of section order.</div>`, (box, close) => {
+    const go = async mode => { const c = await renumberPhotos(mode); close(); renderSection(); renderSide(); toast(c ? c + ' photo' + (c > 1 ? 's' : '') + ' renumbered' : 'Already in sequence'); };
+    box.querySelector('#rnRep').onclick = () => go('report'); box.querySelector('#rnTime').onclick = () => go('time');
+  });
+}
 function renderPhotoLog() {
   const ps = S.photos.slice().sort((a, b) => a.num - b.num);
-  let h = `<div class="wrap"><div class="sec-title"><h2>Photo Log</h2><span class="hint">${ps.length} photos</span></div>`;
+  const st = photoNumState();
+  let h = `<div class="wrap"><div class="sec-title"><h2>Photo Log</h2><span class="hint">${ps.length} photos</span>${ps.length ? '<button class="btn sm" id="btnRenum" style="margin-left:auto">Renumber…</button>' : ''}</div>`;
+  if (st.gaps || st.ooo) h += `<div class="hint" style="margin:0 0 12px;padding:10px 12px;border:1px solid #d9a441;border-radius:8px;background:#fff8e6;color:#5a4200">${st.gaps ? `Photo numbers have gaps (${st.n} photos, highest number ${st.last}) — usually from deleted photos. ` : ''}${st.ooo ? 'Numbers do not increase in report order (photos taken out of section order, or moved). ' : ''}Use Renumber to fix.</div>`;
   if (!ps.length) h += '<div class="empty"><b>No photos yet</b>Use the camera button on any field or section heading.</div>';
   for (const p of ps) h += `<div class="card" data-ph="${p.id}"><img src="${p.thumb}" style="width:84px;height:84px;object-fit:cover;border-radius:8px"><div class="info"><div class="t">Photo ${p.num}${p.caption ? ' — ' + esc(p.caption) : ''}</div><div class="m">${esc(photoLabel(p))}</div><div class="m">${new Date(p.ts).toLocaleString()}</div></div></div>`;
   $('#main').innerHTML = h + '</div>';
-  $('#main').onclick = e => { const th = e.target.closest('[data-ph]'); if (th) photoModal(th.dataset.ph); };
+  $('#main').onclick = e => { if (e.target.closest('#btnRenum')) return renumberModal(); const th = e.target.closest('[data-ph]'); if (th) photoModal(th.dataset.ph); };
   $('#main').oninput = null;
 }
 
