@@ -2130,7 +2130,7 @@ function renderReport() {
       h += `<h2>Photo Log</h2><table class="log"><thead><tr><th>No.</th><th>Section / Item</th><th>Caption</th><th>Time</th></tr></thead><tbody>${S.photos.slice().sort((a, b) => a.num - b.num).map(p => `<tr><td>${opts.appendix ? `<a href="#app-${p.id}">${p.num}</a>` : p.num}</td><td><a href="#sec-${p.sec}">${esc(photoLabel(p))}</a></td><td>${esc(p.caption)}</td><td>${new Date(p.ts).toLocaleString()}</td></tr>`).join('')}</tbody></table>`;
     }
     if (opts.appendix && !opts.blank) h += appendixHtml(S.photos.slice().sort((a, b) => a.num - b.num), urls, opts.per);
-    h += `<div class="sig"><div>Engineer</div><div>Date</div></div><div class="foot">${esc(BRAND.footer)}</div></div>`;
+    h += `<div class="foot">${esc(BRAND.footer)}</div></div>`;
     R.innerHTML = h;
     R.querySelector('#oBlank').onchange = e => { opts.blank = e.target.checked; build(); };
     R.querySelector('#oAll').onchange = e => { opts.allFields = e.target.checked; build(); };
@@ -2337,7 +2337,7 @@ const PDF = (() => {
   function planRows(rows, opts) { // -> {wide:r,h} (full-width field) | {cells:[r...]} (run of half-width fields, each with .h)
     const colW = (CW - 16) / 2; const out = []; let run = null;
     for (const r of rows) {
-      if (isWideRow(r, opts)) { run = null; out.push({ wide: r, h: textH(r.f, r.val, CW, opts) + (r.ps.length ? phRow(opts) : 0) }); }
+      if (isWideRow(r, opts)) { run = null; out.push({ wide: r, h: textH(r.f, r.val, CW, opts) + Math.ceil(r.ps.length / 4) * phRow(opts) }); }
       else { r.h = textH(r.f, r.val, colW, opts) + Math.ceil(r.ps.length / 2) * phRow(opts); if (!run) { run = { cells: [], h: r.h }; out.push(run); } run.cells.push(r); }
     }
     return out;
@@ -2466,7 +2466,7 @@ const PDF = (() => {
         if (it.hdr) { h3(it.hdr.label, it.na, it.first); inlinePhotos(it.hp, opts); }
         for (const L of it.lay) {
           if (L.wide) { // full-width field; its first row of photos stays on the same page
-            const r = L.wide; ensure(Math.min(L.h + 10, MAXKEEP)); const h = fieldRow(r.f, r.val, M, CW, opts); y += h; inlinePhotos(r.ps, opts);
+            const r = L.wide; ensure(Math.min(L.h + 10, 680)); /* all of its photo rows stay with it when they fit on one page */ const h = fieldRow(r.f, r.val, M, CW, opts); y += h; inlinePhotos(r.ps, opts);
           } else { // run of half-width fields in two columns; each goes in the shorter column with its photos (up to two) directly beneath it
             let yc = [y, y];
             for (const r of L.cells) {
@@ -2520,8 +2520,7 @@ const PDF = (() => {
         k++; if (k % cols === 0) y = top + bh + 30; else if (i === sorted.length - 1) y = top + bh + 30;
       }
     }
-    // signature + footer
-    ensure(50); y += 20; doc.setDrawColor(0); doc.setLineWidth(.6); doc.line(M, y, M + CW / 2 - 15, y); doc.line(M + CW / 2 + 15, y, M + CW, y); font('normal', 8, GRAY); doc.text('Engineer', M, y + 4, { baseline: 'top' }); doc.text('Date', M + CW / 2 + 15, y + 4, { baseline: 'top' });
+    // footer
     const N = doc.getNumberOfPages();
     for (let p = 1; p <= N; p++) { doc.setPage(p); font('normal', 7.5, [107, 114, 128]); doc.setDrawColor(...LGRAY); doc.setLineWidth(.5); doc.line(M, FOOT - 5, M + CW, FOOT - 5); doc.text(BRAND.footer, M, FOOT, { baseline: 'top' }); doc.text(`${c.case || 'Inspection'} — ${pr.doc}`, M + CW / 2, FOOT, { baseline: 'top', align: 'center' }); doc.text(`Page ${p} of ${N}`, M + CW, FOOT, { baseline: 'top', align: 'right' }); }
     // links: inline -> appendix, appendix label -> section, log -> both
