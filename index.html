@@ -96,6 +96,9 @@ textarea.in{height:auto;min-height:88px;padding:10px 12px;resize:vertical;line-h
 .chip{border:1px solid var(--line);background:var(--chip);border-radius:22px;height:40px;padding:0 14px;font-size:15px;font-weight:500;white-space:nowrap}
 .chip.on{background:var(--chipon);border-color:var(--chipon);color:#fff}
 .status .chips{margin-bottom:8px}
+.addr{display:grid;grid-template-columns:1fr 84px 120px;gap:10px}.addr .a-wide{grid-column:1/-1}.addr .a-st .in{text-transform:uppercase}
+.addr label{font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px}
+.chk{display:flex;align-items:center;gap:12px;min-height:var(--tap);font-size:16px;font-weight:500;cursor:pointer}.chk input{width:26px;height:26px;flex:none;accent-color:var(--chipon)}
 .lr{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .lr label{font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px}
 .mc{display:grid;gap:10px;grid-template-columns:repeat(4,1fr)}.mc.c2{grid-template-columns:1fr 1fr}.mc.c3{grid-template-columns:repeat(3,1fr)}
@@ -811,7 +814,8 @@ const SCHEMA = [
       { id: 'client', label: 'Client / Retaining Counsel', type: 'text' },
       { id: 'fileno', label: 'File No.', type: 'text' },
       { id: 'vi_date', label: 'VI Date', type: 'date' },
-      { id: 'vi_loc', label: 'VI Location', type: 'text' },
+      { id: 'subject', label: 'Subject Vehicle', type: 'check', text: 'This is the subject vehicle' },
+      { id: 'vi_addr', label: 'VI Location', type: 'addr', full: true },
       { id: 'vi_eng', label: 'VI Engineers', type: 'text', full: true },
       { id: 'attend', label: 'Other Attendees / Parties Present', type: 'area', full: true },
       { id: 'weather', label: 'Conditions (weather / lighting / indoors)', type: 'text', full: true },
@@ -1689,6 +1693,8 @@ async function hydratePhotos(list) {
 function migrateInsp(i) {
   if (!i) return i;
   if (!i.profile) i.profile = 'pass'; // inspections created before vehicle types existed
+  // single 'VI Location' text box became an address block (facility / street / city / state / zip)
+  const cs = i.data && i.data.case; if (cs && cs.vi_loc != null) { if (cs.vi_loc && !isFilled(cs.vi_addr)) cs.vi_addr = { name: cs.vi_loc }; delete cs.vi_loc; }
   // 'OK' status option renamed to 'Unremarkable'
   for (const sid in i.data) { const d = i.data[sid]; for (const k in d) { const v = d[k]; if (v && typeof v === 'object' && !Array.isArray(v)) { for (const kk of ['s', 'l', 'r']) if (v[kk] === 'OK') v[kk] = 'Unremarkable'; } } }
   return i;
@@ -1720,7 +1726,7 @@ function sectionProgress(insp, sec) {
   const d = insp.data[sec.id] || {};
   let tot = 0, done = 0;
   for (const f of sec.fields) {
-    if (f.type === 'heading') continue;
+    if (f.type === 'heading' || f.type === 'check') continue;
     if (insp.na[sec.id + '.' + headingFor(sec, f)]) continue;
     tot++; if (isFilled(d[f.id])) done++;
   }
@@ -1728,6 +1734,31 @@ function sectionProgress(insp, sec) {
 }
 function headingFor(sec, f) { // id of nearest preceding heading (for N/A grouping)
   let h = ''; for (const x of sec.fields) { if (x.type === 'heading') h = x.id; if (x === f) return h; } return h;
+}
+/* address block + package naming */
+function addrLines(a) { a = a || {}; const cs = [a.city, (a.st || '').toUpperCase()].filter(Boolean).join(', '); return [a.name, a.street, [cs, a.zip].filter(Boolean).join(' ')].filter(Boolean); }
+function locShort(c) { const a = c.vi_addr || {}; return [a.name, [a.city, (a.st || '').toUpperCase()].filter(Boolean).join(', ')].filter(Boolean).join(' · ') || c.vi_loc || ''; }
+const nameSlug = s => String(s || '').normalize('NFKD').replace(/[^\w\s-]+/g, '').trim().replace(/[\s_]+/g, '-').replace(/-+/g, '-');
+function engInitials(s) {
+  return String(s || '').split(/[,;\/&\n]+|\band\b/i).map(n => n.trim()).filter(Boolean).map(n => {
+    const w = n.split(/\s+/).filter(x => /^[A-Za-z]/.test(x) && !/^(p\.?e\.?|ph\.?d\.?|jr\.?|sr\.?|ii|iii)$/i.test(x));
+    if (w.length === 1 && /^[A-Z]{2,4}$/.test(w[0])) return w[0]; // already initials
+    return w.map(x => x[0].toUpperCase()).join('');
+  }).filter(Boolean);
+}
+/* e.g. 2026-11-04-Subject-VI-RAM-1500-Houston-TX-RC */
+function pkgName(i) {
+  const c = i.data.case || {}, v = vehicleData(i), a = c.vi_addr || {};
+  return [c.vi_date || today(), c.subject ? 'Subject' : '', 'VI', nameSlug(v.make), nameSlug(v.model), nameSlug(a.city), nameSlug((a.st || '').toUpperCase()), ...engInitials(c.vi_eng)].filter(Boolean).join('-');
+}
+const cleanFileName = s => String(s || '').replace(/[\\/:*?"<>|\x00-\x1f]+/g, '').replace(/\s+/g, ' ').replace(/[. ]+$/, '').trim();
+function askName(def, title, hint) {
+  return new Promise(res => modal(`<h3>${title} <button class="btn sm" data-close>Cancel</button></h3><div class="hint" style="margin-bottom:8px">${hint}</div><input class="in" id="nmIn" value="${esc(def)}" autocomplete="off" autocapitalize="off" spellcheck="false"><div class="row" style="margin-top:12px"><button class="btn primary" id="nmOk">Save</button><button class="btn" id="nmReset">Reset name</button></div>`, (box, close) => {
+    const inp = box.querySelector('#nmIn');
+    box.querySelector('#nmReset').onclick = () => { inp.value = def; inp.focus(); };
+    const ok = () => { const n = cleanFileName(inp.value) || def; close(); res(n); };
+    box.querySelector('#nmOk').onclick = ok; inp.onkeydown = e => { if (e.key === 'Enter') ok(); };
+  }));
 }
 function inspTitle(i) { const c = (i.data.case || {}); const v = vehicleData(i); const veh = [v.year, v.make, v.model].filter(Boolean).join(' '); return (c.case || 'Untitled inspection') + (veh ? ' — ' + veh : ''); }
 
@@ -1761,7 +1792,7 @@ async function renderList() {
   for (const i of all) {
     let tot = 0, done = 0; for (const sid of i.enabled) { const s = secById(sid); if (!s) continue; const p = sectionProgress(i, s); tot += p.tot; done += p.done; }
     const c = i.data.case || {}; const pr = profileById(i.profile);
-    html += `<div class="card" data-open="${i.id}"><div class="info"><div class="t">${esc(inspTitle(i))}</div><div class="m"><span class="badge">${esc(pr.short)}</span>${esc(fmtDate(c.vi_date))}${c.vi_loc ? ' · ' + esc(c.vi_loc) : ''} · updated ${new Date(i.updated).toLocaleDateString()}</div></div><div class="prog">${tot ? Math.round(done / tot * 100) : 0}%</div><button class="btn sm" data-dup="${i.id}">Copy</button><button class="btn sm danger" data-del="${i.id}">Delete</button></div>`;
+    html += `<div class="card" data-open="${i.id}"><div class="info"><div class="t">${esc(inspTitle(i))}</div><div class="m"><span class="badge">${esc(pr.short)}</span>${esc(fmtDate(c.vi_date))}${locShort(c) ? ' · ' + esc(locShort(c)) : ''} · updated ${new Date(i.updated).toLocaleDateString()}</div></div><div class="prog">${tot ? Math.round(done / tot * 100) : 0}%</div><button class="btn sm" data-dup="${i.id}">Copy</button><button class="btn sm danger" data-del="${i.id}">Delete</button></div>`;
   }
   $('#main').innerHTML = html + '</div>';
   $('#btnNew').onclick = () => pickProfile(async pid => { const i = blankInsp(pid); i.data.case = { vi_date: today() }; await DB.put('insp', i); location.hash = '#/i/' + i.id; });
@@ -1855,6 +1886,8 @@ function fieldInput(f, v) {
     case 'num': return `<input class="in" data-k="" value="${esc(v)}" inputmode="decimal" autocomplete="off">`;
     case 'date': return `<input class="in" type="date" data-k="" value="${esc(v)}">`;
     case 'area': return `<textarea class="in" data-k="" rows="${f.rows || 3}">${esc(v)}</textarea>`;
+    case 'check': return `<label class="chk"><input type="checkbox" data-chk ${v ? 'checked' : ''}><span>${esc(f.text || f.label)}</span></label>`;
+    case 'addr': { const o = v || {}; const b = (cls, k, l, extra) => `<div class="${cls}"><label>${l}</label><input class="in" data-k="${k}" value="${esc(o[k])}" autocomplete="off" ${extra || ''}></div>`; return `<div class="addr">${b('a-wide', 'name', 'Facility / Business Name')}${b('a-wide', 'street', 'Street Address')}${b('a-city', 'city', 'City')}${b('a-st', 'st', 'State', 'maxlength="2" autocapitalize="characters"')}${b('a-zip', 'zip', 'ZIP', 'inputmode="numeric" maxlength="10"')}</div>`; }
     case 'select': return chipsHtml(f.opts, v);
     case 'yn': return chipsHtml(['Yes', 'No'], v);
     case 'multi': return chipsHtml(f.opts, v, true);
@@ -1876,6 +1909,7 @@ function bindSection(sec, d) {
   main.oninput = e => {
     const el = e.target; const fe = el.closest('[data-f]'); if (!fe) return; const f = fieldOf(sec, fe.dataset.f);
     if (el.dataset.row !== undefined) { const rows = tableRows(f, d); rows[+el.dataset.row][el.dataset.col] = el.value; d[f.id] = rows; }
+    else if (el.dataset.chk !== undefined) d[f.id] = el.checked ? 'Yes' : '';
     else if (el.dataset.k === '') d[f.id] = el.value;
     else if (el.dataset.k) { d[f.id] = Object.assign({}, d[f.id] || {}); d[f.id][el.dataset.k] = el.value; }
     save(); updateSideCount(sec);
@@ -2008,9 +2042,10 @@ function renderPhotoLog() {
 
 /* ===================== report ===================== */
 function valHtml(f, v, blank) {
-  if (blank) { if (f.type === 'table') return tableHtml(f, [], true); return `<div class="v blank ${f.type === 'area' ? 'tall' : ''}">${['select', 'yn', 'multi', 'status', 'lrsel'].includes(f.type) ? esc((f.opts || ['Yes', 'No']).join('  /  ')) : ''}</div>`; }
+  if (blank) { if (f.type === 'table') return tableHtml(f, [], true); return `<div class="v blank ${f.type === 'area' || f.type === 'addr' ? 'tall' : ''}">${['select', 'yn', 'check', 'multi', 'status', 'lrsel'].includes(f.type) ? esc((f.opts || ['Yes', 'No']).join('  /  ')) : ''}</div>`; }
   if (!isFilled(v)) return '';
   switch (f.type) {
+    case 'addr': return `<div class="v">${addrLines(v).map(esc).join('<br>')}</div>`;
     case 'multi': return `<div class="v">${esc(v.join(', '))}</div>`;
     case 'status': return `<div class="v">${esc([v.s, v.c].filter(Boolean).join(' — '))}</div>`;
     case 'lr': { const c = f.cols || ['Left', 'Right']; return `<div class="v"><div class="lrv"><div><small>${esc(c[0])}</small>${esc(v.l)}</div><div><small>${esc(c[1])}</small>${esc(v.r)}</div></div></div>`; }
@@ -2041,15 +2076,15 @@ function appendixHtml(ps, urls, per) {
 function renderReport() {
   const i = S.insp; $('#app').classList.add('hidden'); const R = $('#report'); R.classList.remove('hidden');
   $('#btnBack').classList.remove('hidden'); $('#btnBack').onclick = () => { location.hash = '#/i/' + i.id + '/' + (S.sec || ''); };
-  $('#ttl').textContent = 'Report — ' + inspTitle(i); $('#sub').textContent = ''; $('#topActs').innerHTML = '<button class="tb" id="btnPkg" title="Folder with the PDF and the full-resolution photos, linked">Save package</button><button class="tb" id="btnPrint">Save PDF</button>';
+  $('#ttl').textContent = 'Report — ' + inspTitle(i); $('#sub').textContent = ''; $('#topActs').innerHTML = '<button class="tb" id="btnPkg" title="Client folder: the PDF plus a photos folder of full-resolution originals, linked from the PDF">Save package</button><button class="tb" id="btnPrint">Save PDF</button>';
   $('#btnPrint').onclick = () => savePdf(S.rpOpts); $('#btnPkg').onclick = () => savePackage(S.rpOpts);
   const urls = {}; for (const p of S.photos) urls[p.id] = URL.createObjectURL(p.rep);
   const turls = {}; for (const p of S.photos) turls[p.id] = p.thumb;
-  const opts = S.rpOpts = { blank: false, allFields: false, photos: true, log: true, appendix: true, per: 4 };
+  const opts = S.rpOpts = { blank: false, allFields: false, photos: true, log: true, appendix: false, per: 4 };
   const build = () => {
     const c = i.data.case || {}; const v = vehicleData(i); const pr = profileById(i.profile);
     let h = `<div class="rp-tools"><span style="font-weight:600;font-size:14px">Report options:</span><label><input type="checkbox" id="oBlank" ${opts.blank ? 'checked' : ''}> Blank form (for handwriting)</label><label><input type="checkbox" id="oAll" ${opts.allFields ? 'checked' : ''}> Include empty fields</label><label><input type="checkbox" id="oPh" ${opts.photos ? 'checked' : ''}> Photos inline</label><label><input type="checkbox" id="oLog" ${opts.log ? 'checked' : ''}> Photo log</label><label><input type="checkbox" id="oApx" ${opts.appendix ? 'checked' : ''}> Photo appendix</label><label>per page <select id="oPer" ${opts.appendix ? '' : 'disabled'}>${[1, 2, 4, 6].map(n => `<option value="${n}" ${opts.per === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label><button class="btn sm" id="rpPrint" style="margin-left:auto;color:#111">Print (browser)</button></div><div class="rp ${opts.blank ? 'blankform' : ''}">`;
-    h += `<div class="cover"><h1>${esc(pr.doc)}</h1><div class="k"><b>Case</b><span>${esc(c.case)}</span><b>Date</b><span>${esc(fmtDate(c.vi_date))}</span><b>${pr.id === 'trailer' ? 'Trailer' : 'Vehicle'}</b><span>${esc([v.year, v.make, v.model, v.trim].filter(Boolean).join(' '))}</span><b>VIN</b><span>${esc(v.vin)}</span><b>Type</b><span>${esc(pr.label)}</span><b>Unit / Plate</b><span>${esc([v.unit, v.license].filter(Boolean).join(' · '))}</span><b>Location</b><span>${esc(c.vi_loc)}</span><b>Engineers</b><span>${esc(c.vi_eng)}</span><b>Client</b><span>${esc(c.client)}</span><b>File No.</b><span>${esc(c.fileno)}</span></div></div>`;
+    h += `<div class="cover"><h1>${esc(pr.doc)}</h1><div class="k"><b>Case</b><span>${esc(c.case)}</span><b>Date</b><span>${esc(fmtDate(c.vi_date))}</span><b>${pr.id === 'trailer' ? 'Trailer' : 'Vehicle'}</b><span>${esc([v.year, v.make, v.model, v.trim].filter(Boolean).join(' ') + (c.subject ? ' (Subject)' : ''))}</span><b>VIN</b><span>${esc(v.vin)}</span><b>Type</b><span>${esc(pr.label)}</span><b>Unit / Plate</b><span>${esc([v.unit, v.license].filter(Boolean).join(' · '))}</span><b>Location</b><span>${esc(addrLines(c.vi_addr).join(', '))}</span><b>Engineers</b><span>${esc(c.vi_eng)}</span><b>Client</b><span>${esc(c.client)}</span><b>File No.</b><span>${esc(c.fileno)}</span></div></div>`;
     let first = true;
     for (const sid of i.enabled) {
       const s = secById(sid); if (!s) continue; const d = i.data[sid] || {};
@@ -2245,7 +2280,7 @@ const PDF = (() => {
   const PW = 612, PH = 792, M = 40, CW = PW - 2 * M, FOOT = 770, BOTTOM = PH - 48;
   const NAVY = [31, 58, 95], LINK = [47, 93, 143], GRAY = [55, 65, 81], LGRAY = [209, 213, 219], ORANGE = [146, 64, 14];
   const LBLW = 0.4; // label share of a column
-  let doc, y, page, links, secPage, appPos, urlsCache;
+  let doc, y, page, links, flinks, secPage, appPos, urlsCache;
 
   function newPage() { doc.addPage(); page++; y = M; }
   function ensure(h) { if (y + h > BOTTOM) newPage(); }
@@ -2262,6 +2297,7 @@ const PDF = (() => {
     if (blank) return null;
     if (!isFilled(v)) return '';
     switch (f.type) {
+      case 'addr': return addrLines(v).join('\n');
       case 'multi': return v.join(', ');
       case 'status': return [v.s, v.c].filter(Boolean).join(' — ');
       case 'tread': return `Outside ${v.o || '—'}/32 · Middle ${v.m || '—'}/32 · Inside ${v.i || '—'}/32`;
@@ -2291,7 +2327,8 @@ const PDF = (() => {
       return tableBlock(f, v, x, w, opts);
     } else {
       const s = valStr(f, v, blank);
-      if (blank) { h = f.type === 'area' ? 42 : 16; ensure(h + 6); textBlock(f.label, x, lw, 7.5, 'bold', GRAY); const o = f.opts || (f.type === 'yn' ? ['Yes', 'No'] : null); if (o) { font('normal', 7.5, GRAY); textBlock(o.join('  /  '), vx, vw, 7.5, 'normal', GRAY); } doc.setDrawColor(0); doc.setLineWidth(.5); if (f.type === 'area') { for (let k = 1; k <= 3; k++) doc.line(vx, y + k * 13, vx + vw, y + k * 13); } else doc.line(vx, y + h, vx + vw, y + h); }
+      const tall = f.type === 'area' || f.type === 'addr';
+      if (blank) { h = tall ? 42 : 16; ensure(h + 6); textBlock(f.label, x, lw, 7.5, 'bold', GRAY); const o = f.opts || (f.type === 'yn' || f.type === 'check' ? ['Yes', 'No'] : null); if (o) { font('normal', 7.5, GRAY); textBlock(o.join('  /  '), vx, vw, 7.5, 'normal', GRAY); } doc.setDrawColor(0); doc.setLineWidth(.5); if (tall) { for (let k = 1; k <= 3; k++) doc.line(vx, y + k * 13, vx + vw, y + k * 13); } else doc.line(vx, y + h, vx + vw, y + h); }
       else { doc.setFont(isCode(f) ? 'courier' : 'helvetica', 'normal'); const vh = s ? lines(s, vw).length * 9.5 * 1.25 : 12; h = Math.max(measure(f.label, lw, 7.5), vh); ensure(h + 6); textBlock(f.label, x, lw, 7.5, 'bold', GRAY); if (s) { font('normal', 9.5); if (isCode(f)) doc.setFont('courier', 'normal'); doc.setCharSpace(isCode(f) ? .6 : 0); lines(s, vw).forEach((l, i) => doc.text(l, vx, y + i * 9.5 * 1.25, { baseline: 'top' })); doc.setCharSpace(0); } }
     }
     doc.setDrawColor(...LGRAY); doc.setLineWidth(.4); doc.setLineDashPattern([1, 1.5], 0); doc.line(x, y + h + 3, x + w, y + h + 3); doc.setLineDashPattern([], 0);
@@ -2317,15 +2354,19 @@ const PDF = (() => {
     if (!ps.length) return;
     const tw = 118, th = 88, gap = 8, per = 4; let i = 0;
     while (i < ps.length) {
-      ensure(th + 24);
+      ensure(th + (opts.fileLinks ? 33 : 24));
       for (let k = 0; k < per && i < ps.length; k++, i++) {
         const p = ps[i]; const x = M + k * (tw + gap);
         const d = drawImage(p.thumb, x, y, tw, th);
         font('normal', 7.5, opts.appendix ? LINK : [0, 0, 0]); const cap = `Photo ${p.num}${opts.appendix ? ' ↗' : ''}${p.caption ? ' — ' + p.caption : ''}`;
         doc.text(lines(cap, tw)[0], x, y + th + 3, { baseline: 'top' });
         if (opts.appendix) links.push({ page, x, y, w: tw, h: th + 12, pid: p.id });
+        if (opts.fileLinks) { // package: file name under the photo; thumbnail opens the full-resolution file
+          const fl = PHOTO_FILE(p); font('normal', 7, LINK); doc.text(fl.split('/').pop(), x, y + th + 12.5, { baseline: 'top' });
+          flinks.push({ page, x, y: y + th + 11.5, w: tw, h: 10, url: fl }); if (!opts.appendix) flinks.push({ page, x, y, w: tw, h: th + 11, url: fl });
+        }
       }
-      y += th + 18;
+      y += th + (opts.fileLinks ? 27 : 18);
     }
   }
   function drawImage(src, x, y0, bw, bh) { // contain-fit into box, returns drawn rect
@@ -2340,11 +2381,11 @@ const PDF = (() => {
   }
 
   async function build(insp, photos, opts, progress) {
-    doc = new jspdf.jsPDF({ unit: 'pt', format: 'letter', compress: true }); page = 1; y = M; links = []; secPage = {}; appPos = {};
+    doc = new jspdf.jsPDF({ unit: 'pt', format: 'letter', compress: true }); page = 1; y = M; links = []; flinks = []; secPage = {}; appPos = {};
     const c = insp.data.case || {}, v = vehicleData(insp), pr = profileById(insp.profile);
     // cover block
     font('bold', 18, NAVY); doc.text(pr.doc, M, y, { baseline: 'top' }); y += 26;
-    const kv = [['Case', c.case], ['Date', fmtDate(c.vi_date)], [pr.id === 'trailer' ? 'Trailer' : 'Vehicle', [v.year, v.make, v.model, v.trim].filter(Boolean).join(' ')], ['VIN', v.vin], ['Type', pr.label], ['Unit / Plate', [v.unit, v.license].filter(Boolean).join(' · ')], ['Location', c.vi_loc], ['Engineers', c.vi_eng], ['Client', c.client], ['File No.', c.fileno]];
+    const kv = [['Case', c.case], ['Date', fmtDate(c.vi_date)], [pr.id === 'trailer' ? 'Trailer' : 'Vehicle', [v.year, v.make, v.model, v.trim].filter(Boolean).join(' ') + (c.subject ? ' (Subject)' : '')], ['VIN', v.vin], ['Type', pr.label], ['Unit / Plate', [v.unit, v.license].filter(Boolean).join(' · ')], ['Location', addrLines(c.vi_addr).join(', ')], ['Engineers', c.vi_eng], ['Client', c.client], ['File No.', c.fileno]];
     for (let i = 0; i < kv.length; i += 2) {
       let rh = 0;
       for (let k = 0; k < 2; k++) { const [l, val] = kv[i + k]; const x = M + k * (CW / 2 + 6); font('bold', 7.5, GRAY); doc.text(l.toUpperCase(), x, y, { baseline: 'top' }); const sy = y; const h = textBlock(val || '', x + 62, CW / 2 - 70, 9.5); y = sy; rh = Math.max(rh, h, 12); }
@@ -2439,7 +2480,8 @@ const PDF = (() => {
     // links: inline -> appendix, appendix label -> section, log -> both
     for (const l of links) { const a = appPos[l.pid]; if (!a) continue; doc.setPage(l.page); doc.link(l.x, l.y, l.w, l.h, { pageNumber: a.page, top: a.top }); }
     for (const pid in appPos) { const a = appPos[pid]; doc.setPage(a.page); if (a.file) { doc.link(a.x, a.top, a.w, a.h, { url: a.file }); doc.link(a.x + a.w - a.rsv, a.lblY - 1, a.rsv, 10, { url: a.file }); } const sp = secPage[a.sec]; if (!sp) continue; doc.link(a.x, a.lblY - 1, a.w - a.rsv, 10, { pageNumber: sp.page, top: sp.top }); }
-    for (const r of logRows) { doc.setPage(r.page); const a = appPos[r.p.id]; if (a) doc.link(M, r.y, 34, r.rh, { pageNumber: a.page, top: a.top }); const sp = secPage[r.p.sec]; if (sp) doc.link(M + 34, r.y, 250, r.rh, { pageNumber: sp.page, top: sp.top }); }
+    for (const l of flinks) { doc.setPage(l.page); doc.link(l.x, l.y, l.w, l.h, { url: l.url }); }
+    for (const r of logRows) { doc.setPage(r.page); const a = appPos[r.p.id]; if (a) doc.link(M, r.y, 34, r.rh, { pageNumber: a.page, top: a.top }); else if (opts.fileLinks) doc.link(M, r.y, 34, r.rh, { url: PHOTO_FILE(r.p) }); const sp = secPage[r.p.sec]; if (sp) doc.link(M + 34, r.y, 250, r.rh, { pageNumber: sp.page, top: sp.top }); }
     doc.setPage(1);
     return doc.output('blob');
   }
@@ -2448,7 +2490,7 @@ const PDF = (() => {
 
 async function savePdf(opts) {
   const i = S.insp; const c = i.data.case || {};
-  const name = ((c.case || 'inspection').replace(/[^\w\- ]+/g, '').trim() || 'inspection') + '_' + (c.vi_date || today()) + (opts.blank ? '_blank' : '') + '.pdf';
+  const name = pkgName(i) + (opts.blank ? '_blank' : '') + '.pdf';
   const btn = $('#btnPrint'); if (btn) { btn.disabled = true; btn.textContent = 'Building…'; }
   try {
     const blob = await PDF.build(i, S.photos, opts, m => { if (btn) btn.textContent = m; });
@@ -2457,12 +2499,14 @@ async function savePdf(opts) {
   finally { if (btn) { btn.disabled = false; btn.textContent = 'Save PDF'; } }
 }
 
-/* Report package: one folder holding the PDF and photos/P###.jpg (full resolution). The PDF's appendix
-   photos link to those files by relative path, so the links hold as long as the folder is kept together. */
+/* Report package: one folder named like 2026-11-04-Subject-VI-RAM-1500-Houston-TX-RC holding the PDF and
+   photos/P###.jpg (full resolution). Each photo in the PDF is labelled with its file name and links to that
+   file by relative path, so the links hold as long as the folder is kept together. The name is built from
+   the Case section and can be edited before saving. The large-photo appendix follows the report option. */
 async function savePackage(opts) {
-  const i = S.insp; const c = i.data.case || {};
-  const base = ((c.case || 'inspection').replace(/[^\w\- ]+/g, '').trim() || 'inspection') + '_' + (c.vi_date || today());
-  const o = { ...opts, blank: false, appendix: true, fileLinks: true };
+  const i = S.insp;
+  const base = await askName(pkgName(i), 'Save package', 'Folder name — built from the date, Subject box, vehicle, city / state and engineers. Edit it here if it is not right.');
+  const o = { ...opts, blank: false, fileLinks: true };
   const btn = $('#btnPkg'); const say = m => { if (btn) btn.textContent = m; };
   const photos = S.photos.slice().sort((a, b) => a.num - b.num);
   let root = null;
@@ -2471,21 +2515,21 @@ async function savePackage(opts) {
   try {
     say('Building PDF…'); const blob = await PDF.build(i, S.photos, o, say);
     if (root) {
-      let name = base + '_Report', k = 1;
-      for (;;) { try { await root.getDirectoryHandle(name); k++; name = base + '_Report (' + k + ')'; } catch (e) { break; } }
+      let name = base, k = 1;
+      for (;;) { try { await root.getDirectoryHandle(name); k++; name = base + ' (' + k + ')'; } catch (e) { break; } }
       const dir = await root.getDirectoryHandle(name, { create: true }); const pdir = await dir.getDirectoryHandle('photos', { create: true });
       const put = async (d, n, data) => { const fh = await d.getFileHandle(n, { create: true }); const w = await fh.createWritable(); await w.write(data); await w.close(); };
       await put(dir, base + '.pdf', blob);
       for (let k2 = 0; k2 < photos.length; k2++) { say(`Photo ${k2 + 1} of ${photos.length}`); await put(pdir, PHOTO_FILE(photos[k2]).split('/').pop(), photoBuf(photos[k2])); }
-      toast('Saved folder ' + name); modal(`<h3>Report package saved <button class="btn sm" data-close>Done</button></h3><div class="hint">Folder <b>${esc(name)}</b> in ${esc(root.name)}: ${esc(base)}.pdf and photos/ (${photos.length} files). Keep the PDF and the photos folder together so the photo links keep working.</div>`);
+      toast('Saved folder ' + name); modal(`<h3>Package saved <button class="btn sm" data-close>Done</button></h3><div class="hint">Folder <b>${esc(name)}</b> in ${esc(root.name)}: ${esc(base)}.pdf and photos/ (${photos.length} files). Keep the PDF and the photos folder together so the photo links keep working.</div>`);
     } else {
       const total = photos.reduce((a, p) => a + photoBuf(p).byteLength, 0);
       if (total > 400 * 1048576 && !confirm('This package is about ' + fmtMB(total) + ' and has to be built in memory as one zip on this device. It may fail on an iPad — a desktop browser (Edge/Chrome) saves straight to a folder instead. Try anyway?')) return;
-      say('Packaging…'); const entries = [{ name: base + '_Report/' + base + '.pdf', data: new Uint8Array(await blob.arrayBuffer()) }];
-      for (const p of photos) entries.push({ name: base + '_Report/' + PHOTO_FILE(p), data: new Uint8Array(photoBuf(p)) });
-      await deliverFile(new File([zipStore(entries)], base + '_Report.zip', { type: 'application/zip' }), 'Report package');
+      say('Packaging…'); const entries = [{ name: base + '/' + base + '.pdf', data: new Uint8Array(await blob.arrayBuffer()) }];
+      for (const p of photos) entries.push({ name: base + '/' + PHOTO_FILE(p), data: new Uint8Array(photoBuf(p)) });
+      await deliverFile(new File([zipStore(entries)], base + '.zip', { type: 'application/zip' }), 'Package');
     }
-  } catch (e) { console.error(e); alert('Could not save the report package: ' + (e.message || e)); }
+  } catch (e) { console.error(e); alert('Could not save the package: ' + (e.message || e)); }
   finally { if (btn) { btn.disabled = false; btn.textContent = 'Save package'; } }
 }
 </script></body></html>
