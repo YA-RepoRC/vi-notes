@@ -817,8 +817,12 @@ const SCHEMA = [
       { id: 'subject', label: 'Subject Vehicle', type: 'check', text: 'This is the subject vehicle' },
       { id: 'vi_addr', label: 'VI Location', type: 'addr', full: true },
       { id: 'vi_eng', label: 'VI Engineers', type: 'text', full: true },
-      { id: 'attend', label: 'Other Attendees / Parties Present', type: 'area', full: true },
       { id: 'weather', label: 'Conditions (weather / lighting / indoors)', type: 'text', full: true },
+    ]
+  },
+  {
+    id: 'signin', title: 'Sign-In', short: 'Sign-In', fields: [
+      { id: 'list', label: 'Attendees', type: 'table', full: true, columns: [{ id: 'name', label: 'Name' }, { id: 'co', label: 'Company' }, { id: 'rep', label: 'Representing', w: .8 }, { id: 'phone', label: 'Phone / Email', w: 1.5 }] },
     ]
   },
   {
@@ -886,11 +890,6 @@ const SCHEMA = [
       { id: 'missing', label: 'Parts / Pieces Missing', type: 'area', full: true },
       { id: 'companion', label: 'Companion Tractor — see separate inspection', type: 'text', full: true, hint: 'VIN / unit no. of the tractor if inspected under its own record' },
       { id: 'notes', label: 'Notes', type: 'area', full: true },
-    ]
-  },
-  {
-    id: 'signin', title: 'Sign-In', short: 'Sign-In', fields: [
-      { id: 'list', label: 'Attendees', type: 'table', full: true, columns: [{ id: 'name', label: 'Name' }, { id: 'co', label: 'Company / Representing' }, { id: 'phone', label: 'Phone / Email' }] },
     ]
   },
   /* ===================== PASSENGER VEHICLES ===================== */
@@ -1695,6 +1694,11 @@ function migrateInsp(i) {
   if (!i.profile) i.profile = 'pass'; // inspections created before vehicle types existed
   // single 'VI Location' text box became an address block (facility / street / city / state / zip)
   const cs = i.data && i.data.case; if (cs && cs.vi_loc != null) { if (cs.vi_loc && !isFilled(cs.vi_addr)) cs.vi_addr = { name: cs.vi_loc }; delete cs.vi_loc; }
+  // Sign-In moved to directly after Case: keep every record's section list in schema order
+  if (Array.isArray(i.enabled)) { const ord = SCHEMA.map(s => s.id); i.enabled = ord.filter(x => i.enabled.includes(x)).concat(i.enabled.filter(x => !ord.includes(x))); }
+  // Sign-In 'Company / Representing' column split in two (once per record)
+  i.mig = i.mig || {};
+  if (!i.mig.signin2) { const l = i.data && i.data.signin && i.data.signin.list; if (Array.isArray(l)) for (const r of l) { if (r && r.rep == null && typeof r.co === 'string' && r.co.includes('/')) { const k = r.co.indexOf('/'); r.rep = r.co.slice(k + 1).trim(); r.co = r.co.slice(0, k).trim(); } } i.mig.signin2 = true; }
   // 'OK' status option renamed to 'Unremarkable'
   for (const sid in i.data) { const d = i.data[sid]; for (const k in d) { const v = d[k]; if (v && typeof v === 'object' && !Array.isArray(v)) { for (const kk of ['s', 'l', 'r']) if (v[kk] === 'OK') v[kk] = 'Unremarkable'; } } }
   return i;
@@ -1711,7 +1715,7 @@ const CAM_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 
 function blankInsp(profile) {
   profile = profile || 'pass';
-  return { id: uid(), profile, created: new Date().toISOString(), updated: new Date().toISOString(), enabled: sectionsFor(profile).map(s => s.id), na: {}, data: {}, photoSeq: 0 };
+  return { id: uid(), profile, created: new Date().toISOString(), updated: new Date().toISOString(), enabled: sectionsFor(profile).map(s => s.id), na: {}, data: {}, photoSeq: 0, mig: { signin2: true } };
 }
 const secById = id => SCHEMA.find(s => s.id === id);
 const fieldOf = (sec, fid) => sec.fields.find(f => f.id === fid);
@@ -2292,8 +2296,8 @@ const PDF = (() => {
   function textBlock(txt, x, w, size, style, color) { font(style || 'normal', size, color); const ls = lines(txt, w); const lh = size * 1.25; ls.forEach((l, i) => doc.text(l, x, y + i * lh, { baseline: 'top' })); return ls.length * lh; }
   function measure(txt, w, size) { doc.setFontSize(size); return lines(txt, w).length * size * 1.25; }
 
-  function h2(title, id) { ensure(40); if (y > M) y += 10; doc.setFillColor(...NAVY); doc.rect(M, y, CW, 20, 'F'); font('bold', 12, [255, 255, 255]); doc.text(title, M + 8, y + 4.5, { baseline: 'top' }); if (id) secPage[id] = { page, top: y }; y += 28; }
-  function h3(title, na) { ensure(30); y += 6; font('bold', 10, NAVY); doc.text(title, M, y, { baseline: 'top' }); if (na) { const w = doc.getTextWidth(title); font('normal', 7.5, ORANGE); doc.text('NOT APPLICABLE / NOT EVALUATED', M + w + 8, y + 2, { baseline: 'top' }); } y += 13; doc.setDrawColor(...NAVY); doc.setLineWidth(1); doc.line(M, y, M + CW, y); y += 5; }
+  function h2(title, id, need) { ensure(40 + (need || 0)); if (y > M) y += 10; doc.setFillColor(...NAVY); doc.rect(M, y, CW, 20, 'F'); font('bold', 12, [255, 255, 255]); doc.text(title, M + 8, y + 4.5, { baseline: 'top' }); if (id) secPage[id] = { page, top: y }; y += 28; }
+  function h3(title, na, need) { ensure(30 + (need || 0)); y += 6; font('bold', 10, NAVY); doc.text(title, M, y, { baseline: 'top' }); if (na) { const w = doc.getTextWidth(title); font('normal', 7.5, ORANGE); doc.text('NOT APPLICABLE / NOT EVALUATED', M + w + 8, y + 2, { baseline: 'top' }); } y += 13; doc.setDrawColor(...NAVY); doc.setLineWidth(1); doc.line(M, y, M + CW, y); y += 5; }
 
   // value -> display string (or special)
   function valStr(f, v, blank) {
@@ -2309,6 +2313,26 @@ const PDF = (() => {
     }
   }
   function isCode(f) { return f.type === 'vin' || /_dot$|_pn$|part number/i.test(f.id + ' ' + f.label); }
+
+  // ---- layout planning: which fields share a row, and how tall each row is (so nothing is split from its photos) ----
+  const WIDE_T = ['table', 'lr', 'lrsel', 'mc', 'addr'];
+  const isWideRow = (r, opts) => !!(r.f.full || WIDE_T.includes(r.f.type) || (['status', 'multi', 'area'].includes(r.f.type) && opts.blank) || r.ps.length > 2);
+  function textH(f, v, w, opts) { // height fieldRow() uses for a label/value field of width w
+    const lw = w * LBLW, vw = w - lw - 6;
+    if (opts.blank) return ((f.type === 'area' || f.type === 'addr') ? 42 : 16) + 8;
+    if (f.type === 'table') return 54;
+    if (f.type === 'lr' || f.type === 'lrsel' || f.type === 'mc') { const o = v || {}; const n = f.type === 'mc' ? f.cols.length : 2; const cw = (vw - 8 * (n - 1)) / n; const vals = Object.values(o).filter(t => typeof t === 'string'); doc.setFont('helvetica', 'normal'); return Math.max(12 + Math.max(0, ...vals.map(t => measure(t, cw, 9.5))) * (f.type === 'lrsel' ? 2 : 1), 12) + 8; }
+    const s = valStr(f, v, false); doc.setFont(isCode(f) ? 'courier' : 'helvetica', 'normal'); doc.setFontSize(9.5);
+    const vh = s ? lines(s, vw).length * 9.5 * 1.25 : 12; doc.setFont('helvetica', 'bold'); return Math.max(measure(f.label, lw, 7.5), vh) + 8;
+  }
+  function planRows(rows, opts) { // -> {wide:r,h} (full-width field) | {cells:[r...]} (run of half-width fields, each with .h)
+    const colW = (CW - 16) / 2; const out = []; let run = null;
+    for (const r of rows) {
+      if (isWideRow(r, opts)) { run = null; out.push({ wide: r, h: textH(r.f, r.val, CW, opts) + (r.ps.length ? phRow(opts) : 0) }); }
+      else { r.h = textH(r.f, r.val, colW, opts) + Math.ceil(r.ps.length / 2) * phRow(opts); if (!run) { run = { cells: [], h: r.h }; out.push(run); } run.cells.push(r); }
+    }
+    return out;
+  }
 
   // one field in a column: returns height used (draws at current y)
   function fieldRow(f, v, x, w, opts) {
@@ -2332,34 +2356,38 @@ const PDF = (() => {
       const s = valStr(f, v, blank);
       const tall = f.type === 'area' || f.type === 'addr';
       if (blank) { h = tall ? 42 : 16; ensure(h + 6); textBlock(f.label, x, lw, 7.5, 'bold', GRAY); const o = f.opts || (f.type === 'yn' || f.type === 'check' ? ['Yes', 'No'] : null); if (o) { font('normal', 7.5, GRAY); textBlock(o.join('  /  '), vx, vw, 7.5, 'normal', GRAY); } doc.setDrawColor(0); doc.setLineWidth(.5); if (tall) { for (let k = 1; k <= 3; k++) doc.line(vx, y + k * 13, vx + vw, y + k * 13); } else doc.line(vx, y + h, vx + vw, y + h); }
-      else { doc.setFont(isCode(f) ? 'courier' : 'helvetica', 'normal'); const vh = s ? lines(s, vw).length * 9.5 * 1.25 : 12; h = Math.max(measure(f.label, lw, 7.5), vh); ensure(h + 6); textBlock(f.label, x, lw, 7.5, 'bold', GRAY); if (s) { font('normal', 9.5); if (isCode(f)) doc.setFont('courier', 'normal'); doc.setCharSpace(isCode(f) ? .6 : 0); lines(s, vw).forEach((l, i) => doc.text(l, vx, y + i * 9.5 * 1.25, { baseline: 'top' })); doc.setCharSpace(0); } }
+      else { doc.setFont(isCode(f) ? 'courier' : 'helvetica', 'normal'); doc.setFontSize(9.5); const vh = s ? lines(s, vw).length * 9.5 * 1.25 : 12; doc.setFont('helvetica', 'bold'); h = Math.max(measure(f.label, lw, 7.5), vh); ensure(h + 6); textBlock(f.label, x, lw, 7.5, 'bold', GRAY); if (s) { font('normal', 9.5); if (isCode(f)) doc.setFont('courier', 'normal'); doc.setCharSpace(isCode(f) ? .6 : 0); lines(s, vw).forEach((l, i) => doc.text(l, vx, y + i * 9.5 * 1.25, { baseline: 'top' })); doc.setCharSpace(0); } }
     }
     doc.setDrawColor(...LGRAY); doc.setLineWidth(.4); doc.setLineDashPattern([1, 1.5], 0); doc.line(x, y + h + 3, x + w, y + h + 3); doc.setLineDashPattern([], 0);
     return h + 8;
   }
   function tableBlock(f, rows, x, w, opts) {
-    const cols = f.columns; const cw = w / cols.length; const data = opts.blank ? Array.from({ length: 8 }, () => ({})) : (rows || []).filter(r => isFilled(r));
-    ensure(40);
+    const cols = f.columns; const data = opts.blank ? Array.from({ length: 8 }, () => ({})) : (rows || []).filter(r => isFilled(r));
+    const tot = cols.reduce((a, c) => a + (c.w || 1), 0); const cws = cols.map(c => w * (c.w || 1) / tot); const cxs = []; cws.reduce((a, v, i) => (cxs[i] = x + a, a + v), 0);
+    if (!opts.blank && !data.length) { ensure(20); textBlock(f.label, x, w, 7.5, 'bold', GRAY); y += 14; return 0; } // no rows: label only, no empty grid
+    ensure(54);
     textBlock(f.label, x, w, 7.5, 'bold', GRAY); y += 11;
-    const drawHead = () => { doc.setFillColor(238, 242, 247); doc.setDrawColor(156, 163, 175); doc.setLineWidth(.4); doc.rect(x, y, w, 14, 'FD'); font('bold', 7.5, GRAY); cols.forEach((c, i) => doc.text(c.label, x + i * cw + 4, y + 3.5, { baseline: 'top' })); y += 14; };
+    const drawHead = () => { doc.setFillColor(238, 242, 247); doc.setDrawColor(156, 163, 175); doc.setLineWidth(.4); doc.rect(x, y, w, 14, 'FD'); font('bold', 7.5, GRAY); cols.forEach((c, i) => doc.text(c.label, cxs[i] + 4, y + 3.5, { baseline: 'top' })); y += 14; };
     drawHead();
     for (const r of data) {
-      const rh = opts.blank ? 16 : Math.max(14, ...cols.map(c => 6 + measure(r[c.id] || '', cw - 8, 8.5)));
+      const rh = opts.blank ? 16 : Math.max(14, ...cols.map((c, i) => 6 + measure(r[c.id] || '', cws[i] - 8, 8.5)));
       if (y + rh > BOTTOM) { newPage(); drawHead(); }
-      doc.setDrawColor(156, 163, 175); doc.rect(x, y, w, rh, 'D'); cols.forEach((c, i) => { doc.line(x + i * cw, y, x + i * cw, y + rh); const sy = y; y += 3; textBlock(r[c.id] || '', x + i * cw + 4, cw - 8, 8.5); y = sy; });
+      doc.setDrawColor(156, 163, 175); doc.rect(x, y, w, rh, 'D'); cols.forEach((c, i) => { doc.line(cxs[i], y, cxs[i], y + rh); const sy = y; y += 3; textBlock(r[c.id] || '', cxs[i] + 4, cws[i] - 8, 8.5); y = sy; });
       y += rh;
     }
     y += 4; return 0;
   }
 
   // inline thumbnails
-  function inlinePhotos(ps, opts) {
+  const TH = 88; const phRow = opts => TH + (opts.fileLinks ? 27 : 18); // height of one row of thumbnails
+  function inlinePhotos(ps, opts, x0, per, noBreak) {
     if (!ps.length) return;
-    const tw = 118, th = 88, gap = 8, per = 4; let i = 0;
+    x0 = x0 == null ? M : x0; per = per || 4;
+    const tw = 118, th = TH, gap = 8; let i = 0;
     while (i < ps.length) {
-      ensure(th + (opts.fileLinks ? 33 : 24));
+      if (!noBreak) ensure(th + (opts.fileLinks ? 33 : 24));
       for (let k = 0; k < per && i < ps.length; k++, i++) {
-        const p = ps[i]; const x = M + k * (tw + gap);
+        const p = ps[i]; const x = x0 + k * (tw + gap);
         const d = drawImage(p.thumb, x, y, tw, th);
         font('normal', 7.5, opts.appendix ? LINK : [0, 0, 0]); const cap = `Photo ${p.num}${opts.appendix ? ' ↗' : ''}${p.caption ? ' — ' + p.caption : ''}`;
         doc.text(lines(cap, tw)[0], x, y + th + 3, { baseline: 'top' });
@@ -2422,22 +2450,24 @@ const PDF = (() => {
         else if (!gr.hdr && rows.length) items.push({ rows });
       }
       if (!items.length) continue;
-      h2(s.title, sid);
+      const MAXKEEP = 330; const colW = (CW - 16) / 2;
+      for (const it of items) { it.lay = planRows(it.rows, opts); it.first = Math.min(MAXKEEP, it.hp && it.hp.length ? phRow(opts) : it.lay[0] ? it.lay[0].h + 10 : 0); }
+      h2(s.title, sid, (items[0].hdr ? 30 : 0) + items[0].first); // a section bar never sits alone at the foot of a page
       for (const it of items) {
-        if (it.hdr) { h3(it.hdr.label, it.na); inlinePhotos(it.hp, opts); }
-        // two-column flow for short fields, full width for wide ones
-        let col = 0, rowY = 0, rowH = 0;
-        const flush = () => { if (col === 1) { y = rowY + rowH; col = 0; } };
-        for (const r of it.rows) {
-          const wide = r.f.full || ['area', 'table', 'lr', 'lrsel', 'mc', 'multi', 'tread', 'status'].includes(r.f.type) || r.ps.length;
-          if (wide) { flush(); const h = fieldRow(r.f, r.val, M, CW, opts); y += h; inlinePhotos(r.ps, opts); }
-          else {
-            const colW = (CW - 16) / 2;
-            if (col === 0) { ensure(30); rowY = y; const h = fieldRow(r.f, r.val, M, colW, opts); rowH = h; col = 1; y = rowY; }
-            else { const pg = page; const h = fieldRow(r.f, r.val, M + colW + 16, colW, opts); if (page !== pg) { rowH = h; rowY = M; } else rowH = Math.max(rowH, h); y = rowY + rowH; col = 0; }
+        if (it.hdr) { h3(it.hdr.label, it.na, it.first); inlinePhotos(it.hp, opts); }
+        for (const L of it.lay) {
+          if (L.wide) { // full-width field; its first row of photos stays on the same page
+            const r = L.wide; ensure(Math.min(L.h + 10, MAXKEEP)); const h = fieldRow(r.f, r.val, M, CW, opts); y += h; inlinePhotos(r.ps, opts);
+          } else { // run of half-width fields in two columns; each goes in the shorter column with its photos (up to two) directly beneath it
+            let yc = [y, y];
+            for (const r of L.cells) {
+              let k = yc[1] < yc[0] - .5 ? 1 : 0; const need = r.h + 14;
+              if (yc[k] + need > BOTTOM) { if (yc[1 - k] + need <= BOTTOM) k = 1 - k; else { newPage(); yc = [y, y]; k = 0; } }
+              y = yc[k]; const x = M + k * (colW + 16); const h = fieldRow(r.f, r.val, x, colW, opts); y += h; inlinePhotos(r.ps, opts, x, 2, true); yc[k] = y;
+            }
+            y = Math.max(yc[0], yc[1]);
           }
         }
-        flush();
         y += 4;
       }
     }
